@@ -4,7 +4,7 @@
 #include <spdk/env.h>
 #include <spdk/event.h>
 #include <stdio.h>
-
+#include <spdk/init.h>
 #define BUFFER_SIZE 512
 // nvme bdev blob blobstore channel
 
@@ -18,6 +18,8 @@ uint8_t *write_buffer;
 uint8_t *read_buffer;
 struct spdk_io_channel *channel;
 #else
+
+struct spdk_thread *global_thread = NULL;
 
 typedef struct zvfs_context_s
 {
@@ -96,7 +98,7 @@ static void zvfs_spdk_blob_sync_cb(void *cb_arg, int bserrno)
         spdk_app_stop(0);
         return;
     }
-    memset(wbuffer, "A", BUFFER_SIZE);
+    memset(wbuffer, 'A', BUFFER_SIZE);
     *(wbuffer + BUFFER_SIZE - 1) = '\0';
     ctx->write_buffer = wbuffer;
     ctx->channel = spdk_bs_alloc_io_channel(ctx->blobstore);
@@ -261,7 +263,77 @@ int main()
     close(fd);
 }
 
+#elif 1
+
+
+
+static const int WAITER_MAX_TIME = 100000;
+
+static bool waiter(struct spdk_thread *thread, spdk_msg_fn start_fn, void *ctx, bool *finished)
+{
+    spdk_thread_send_msg(thread, start_fn, ctx);
+    int wait_count = 0;
+    do
+    {
+        spdk_thread_poll(thread, 0, 0);
+        wait_count++;
+    }
+    while (!(*finished) && wait_count < WAITER_MAX_TIME);
+    if (!(*finished) && wait_count >= WAITER_MAX_TIME)
+    {
+        return false; //timeout
+    }
+    return true;//finished
+
+}
+
+//zvfs.load
+
+
+//static const char *json_file = "/home/gyq2/spdk/build/examples/zvfs.json";
+
+static void json_app_load_done(int rc, void *ctx)
+{
+    bool *done = ctx;
+    *done = true;
+    SPDK_NOTICELOG("json_app_load_done\n");
+}
+
+
+static void zvfs_json_load_fn(void *arg)
+{
+    spdk_subsystem_init(json_app_load_done, arg);
+}
+
+
+int main(int argc, char *argv[])
+{
+    struct spdk_env_opts opts;
+    spdk_env_opts_init(&opts);
+    if (0 != spdk_env_init(&opts))
+    {
+        return -1;
+    }
+    spdk_log_set_print_level(SPDK_LOG_NOTICE);
+    spdk_log_set_level(SPDK_LOG_NOTICE);
+    spdk_log_open(NULL);
+    spdk_thread_lib_init(NULL, 0);
+    global_thread = spdk_thread_create("global", NULL);
+    spdk_set_thread(global_thread);
+    bool done = false;
+    waiter(global_thread, zvfs_json_load_fn, &done, &done);
+    SPDK_NOTICELOG("json_app_load_done complete\n");
+}
+
+
+
+
+
+
 #else
+
+
+
 
 int main(int argc, char *argv[])
 {
