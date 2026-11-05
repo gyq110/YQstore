@@ -1,95 +1,51 @@
-#include <spdk/bdev.h>
-#include <spdk/blob.h>
-#include <spdk/blob_bdev.h>
-#include <spdk/env.h>
-#include <spdk/event.h>
-#include <stdio.h>
-#include <spdk/init.h>
-#include <spdk/file.h>
-#include <spdk/rpc.h>
-#include <stdlib.h>
+
+#include"zvfs.h"
 #define BUFFER_SIZE 512
 // nvme bdev blob blobstore channel
 
-#if 0
-struct spdk_blob_store *blobstore;
-spdk_blob_id blob_id;
-struct spdk_blob *blob;
-uint64_t free_cluster_count = 0;
-uint64_t num_cluster;
-uint8_t *write_buffer;
-uint8_t *read_buffer;
-struct spdk_io_channel *channel;
-#else
 
-struct spdk_thread *global_thread = NULL;
+#if ENABLE_HOOK
+//fd操作
 
-typedef struct zvfs_context_s
+
+
+
+static struct zvfs_file_s *file_table[YQ_MAX_FD] = {0};
+
+void yq_destory_fd(int fd)
 {
-    struct spdk_blob_store *blobstore;
-    spdk_blob_id blob_id;
-    struct spdk_blob *blob;
-    uint64_t free_cluster_count;
-    uint64_t num_cluster;
-    uint64_t unit_size;
-    uint8_t *write_buffer;
-    uint8_t *read_buffer;
-    struct spdk_io_channel *channel;
-} zvfs_context_t;
+    //把这个fd销毁
+    if (fd < 0 || fd >= YQ_MAX_FD)
+    {
+        printf("yq_destory_fd:fd error %d", fd);
+        return ;
+    }
+    syscall(SYS_close, fd);
+}
 
-#define FILENAME_LENGTH 128
-
-typedef struct zvfs_s
+int yq_get_fd_fromlinux()
 {
-    struct spdk_blob_store *blobstore;
-    uint64_t unit_size;
-    uint64_t free_cluster_count;
-    uint64_t num_cluster;
-    struct spdk_io_channel *channel;
-    bool finished;
-} zvfs_t;
+    //这里就是从linux获取一个fd
+    int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (fd < 0 || fd >= YQ_MAX_FD)
+    {
+        printf("yq_get_fd_fromlinux:fd error %d", fd);
+        return -1;
+    }
+    return -1;
 
+}
 
-
-typedef struct zvfs_operation_s
+struct zvfs_file_s *yq_get_filefromfd(int fd)
 {
-    int (*mount)(struct zvfs_s *fs);
-    int (*unmount)(struct zvfs_s *fs);
-
-} zvfs_operation_t;
-
-
-typedef struct zvfs_file_s
-{
-    uint8_t filename[FILENAME_LENGTH];
-    spdk_blob_id blob_id;
-    struct spdk_blob *blob;
-    zvfs_t *fs;
-    uint8_t *write_buffer;
-    uint8_t *read_buffer;
-    bool finished;
-
-} zvfs_file_t;
-
-
-typedef struct zvfs_file_operation_s
-{
-    int (*open)(struct zvfs_file_s *fs);
-    int (*write)(struct zvfs_file_s *fs);
-    int (*read)(struct zvfs_file_s *fs);
-    int (*close)(struct zvfs_file_s *fs);
-
-} zvfs_file_operation_t;
-
+    return file_table[fd];
+}
 
 #endif
 
-//static const int WAITER_MAX_TIME = 100000;
 
 static bool waiter(struct spdk_thread *thread, spdk_msg_fn start_fn, void *ctx, bool *finished)
 {
-#if 1
-
     int rc = spdk_thread_send_msg(thread, start_fn, ctx);
     if (rc != 0)
     {
@@ -103,21 +59,7 @@ static bool waiter(struct spdk_thread *thread, spdk_msg_fn start_fn, void *ctx, 
     }
 
     return true;
-#else
-    spdk_thread_send_msg(thread, start_fn, ctx);
-    int wait_count = 0;
-    do
-    {
-        spdk_thread_poll(thread, 0, 0);
-        wait_count++;
-    }
-    while (!(*finished) && wait_count < WAITER_MAX_TIME);
-    if (!(*finished) && wait_count >= WAITER_MAX_TIME)
-    {
-        return false; //timeout
-    }
-    return true;//finished
-#endif
+
 }
 
 static void zvfs_spdk_bs_unload_cb(void *cb_arg, int bserrno)
@@ -142,37 +84,23 @@ static void zvfs_do_unmount(void *arg)
 }
 static void zvfs_spdk_blob_delete_cb(void *cb_arg, int bserrno)
 {
-#if 0
-    zvfs_context_t *ctx = (zvfs_context_t *)cb_arg;
-    if (ctx->blobstore)
-    {
-        if (ctx->channel)
-        {
-            spdk_bs_free_io_channel(ctx->channel);
-        }
-        spdk_bs_unload(ctx->blobstore, zvfs_spdk_bs_unload_cb, ctx);
-    }
 
-#else
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     spdk_free(file->write_buffer);
     spdk_free(file->read_buffer);
     file->finished = true;
     SPDK_NOTICELOG("close finish\n");
-#endif
+
 }
 
 
 static void zvfs_spdk_blob_close_cb(void *cb_arg, int bserrno)
 {
-#if 0
-    zvfs_context_t *ctx = (zvfs_context_t *)cb_arg;
-    spdk_bs_delete_blob(ctx->blobstore, ctx->blob_id, zvfs_spdk_blob_delete_cb, ctx);
-#else
+
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     spdk_bs_delete_blob(file->fs->blobstore, file->blob_id, zvfs_spdk_blob_delete_cb, file);
 
-#endif
+
 }
 static void zvfs_do_close(void *cb_arg)
 {
@@ -186,7 +114,6 @@ static void zvfs_spdk_blob_read_cb(void *cb_arg, int bserrno)
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     SPDK_NOTICELOG("read buffer: %s\n", file->read_buffer);
     file->finished = true;
-    //spdk_blob_close(ctx->blob, zvfs_spdk_blob_close_cb, ctx);
 }
 
 static void zvfs_do_read(void *cb_arg)
@@ -199,26 +126,10 @@ static void zvfs_do_read(void *cb_arg)
 
 static void zvfs_spdk_blob_write_cb(void *cb_arg, int bserrno)
 {
-#if 0
-    zvfs_context_t *ctx = (zvfs_context_t *)cb_arg;
-    SPDK_NOTICELOG("write complete\n");
-    uint8_t *rbuffer = spdk_malloc(BUFFER_SIZE, 0x1000, NULL,
-                                   SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
-    if (rbuffer == NULL)
-    {
-        spdk_app_stop(0);
-        return;
-    }
-    memset(rbuffer, 0, BUFFER_SIZE);
-    ctx->read_buffer = rbuffer;
-    spdk_blob_io_read(ctx->blob, ctx->channel, rbuffer, 0, 1, zvfs_spdk_blob_read_cb, ctx);
 
-#else
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     file->finished = true;
     SPDK_NOTICELOG("write finish\n");
-
-#endif
 }
 
 
@@ -233,26 +144,7 @@ static void zvfs_do_write(void *cb_arg)
 
 static void zvfs_spdk_blob_sync_cb(void *cb_arg, int bserrno)
 {
-#if 0
-    zvfs_context_t *ctx = (zvfs_context_t *)cb_arg;
-    uint8_t *wbuffer = spdk_malloc(BUFFER_SIZE, 0x1000, NULL,
-                                   SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
-    if (wbuffer == NULL)
-    {
-        spdk_app_stop(0);
-        return;
-    }
-    memset(wbuffer, 'A', BUFFER_SIZE);
-    *(wbuffer + BUFFER_SIZE - 1) = '\0';
-    ctx->write_buffer = wbuffer;
-    ctx->channel = spdk_bs_alloc_io_channel(ctx->blobstore);
-    if (ctx->channel == NULL)
-    {
-        spdk_app_stop(0);
-        return;
-    }
-    spdk_blob_io_write(ctx->blob, ctx->channel, wbuffer, 0, 1, zvfs_spdk_blob_write_cb, ctx);
-#else
+
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     file->write_buffer = spdk_malloc(BUFFER_SIZE, 0x1000, NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
     if (file->write_buffer == NULL)
@@ -267,7 +159,7 @@ static void zvfs_spdk_blob_sync_cb(void *cb_arg, int bserrno)
 
     file->finished = true;
     SPDK_NOTICELOG("open finish\n");
-#endif
+
 }
 
 static void zvfs_spdk_blob_resize_cb(void *cb_arg, int bserrno)
@@ -399,97 +291,6 @@ static int zvfs_close(zvfs_file_t *file)
     return waiter(global_thread, zvfs_do_close, file, &file->finished);
 }
 
-#if 0
-
-#define _GNU_SOURCE
-#include <dlfcn.h>
-#include<stdio.h>
-//open
-
-
-//read
-
-
-//write
-
-
-//close
-
-
-typedef int (*open_t)(const char *pathname, int flags);
-open_t open_f = NULL;
-typedef ssize_t (*read_t)(int fd, void *buf, size_t count);
-read_t read_f = NULL;
-typedef ssize_t (*write_t)(int fd, const void *buf, size_t count);
-write_t write_f = NULL;
-typedef int (*close_t)(int fd);
-close_t close_f = NULL;
-
-
-int open(const char *pathname, int flags)
-{
-    if (open_f == NULL)
-    {
-        open_f = dlsym(RTLD_NEXT, "open");
-    }
-    printf("open..%s\n", pathname);
-    return open_f(pathname, flags);
-}
-
-
-
-ssize_t write(int fd, const void *buf, size_t count)
-{
-    if (write_f == NULL)
-    {
-        write_f = dlsym(RTLD_NEXT, "write");
-    }
-    printf("write..\n");
-    return write_f(fd, buf, count);
-}
-
-ssize_t read(int fd, void *buf, size_t count)
-{
-    if (read_f == NULL)
-    {
-        read_f = dlsym(RTLD_NEXT, "read");
-    }
-    printf("read..\n");
-    return read_f(fd, buf, count);
-}
-
-
-int close(int fd)
-{
-    if (close_f == NULL)
-    {
-        close_f = dlsym(RTLD_NEXT, "close");
-    }
-    printf("close..\n");
-    return close_f(fd);
-
-}
-
-
-
-int main()
-{
-    int fd = open("a.txt", O_CREAT | O_RDWR);
-    char *buffer = "abcdefghigklmnopqrstuvwxyz";
-    write(fd, buffer, strlen(buffer));
-    char *rbuffer[128] = {0};
-    read(fd, buffer, 128);
-    close(fd);
-}
-
-#elif 1
-
-
-
-
-
-//zvfs.load
-
 
 static const char *json_file = "/home/gyq2/spdk/build/examples/zvfs.json";
 
@@ -552,49 +353,45 @@ static int zvfs_env_setup(void)
 }
 
 
-int main(int argc, char *argv[])
+#if ENABLE_HOOK
+//这里是对上面的接口的整合
+int nopen(const char *pathname, int flags)
 {
-    if (0 != zvfs_env_setup())
-    {
-        return -1;
-    }
-    SPDK_NOTICELOG("init success\n");
-    zvfs_t *fs = calloc(1, sizeof(zvfs_t));
-    zvfs_mount(fs);
 
-    zvfs_file_t *file = calloc(1, sizeof(zvfs_file_t));
-    file->fs = fs;
-    zvfs_open(file);
-    char *buffer = "abcdefghigklmnopqrstuvwxyz";
-    zvfs_write(file, buffer, strlen(buffer));
-    char rbuffer[BUFFER_SIZE] = {0};
-    zvfs_read(file, rbuffer, BUFFER_SIZE);
-    zvfs_close(file);
-    free(file);
-    zvfs_unmount(fs);
-    free(fs);
-    return 0;
 }
-
-
-
-#else
-
-
-
-
-int main(int argc, char *argv[])
+ssize_t nread(int fd, void *buf, size_t count)
 {
-    if (argc != 2)
-        return -1;
-    struct spdk_app_opts opts = {};
-    spdk_app_opts_init(&opts, sizeof(opts));
-    opts.name = "zvfs";
-    opts.json_config_file = argv[1];
-    zvfs_context_t *ctx = calloc(1, sizeof(zvfs_context_t));
-    spdk_app_start(&opts, zvfs_entry, ctx);
-    SPDK_NOTICELOG("hello spdk\n");
-    return 0;
-}
 
+}
+ssize_t nwrite(int fd, const void *buf, size_t count)
+{
+
+}
+int nclose(int fd)
+{
+
+}
 #endif
+// int main(int argc, char *argv[])
+// {
+//     if (0 != zvfs_env_setup())
+//     {
+//         return -1;
+//     }
+//     SPDK_NOTICELOG("init success\n");
+//     zvfs_t *fs = calloc(1, sizeof(zvfs_t));
+//     zvfs_mount(fs);
+
+//     zvfs_file_t *file = calloc(1, sizeof(zvfs_file_t));
+//     file->fs = fs;
+//     zvfs_open(file);
+//     char *buffer = "abcdefghigklmnopqrstuvwxyz";
+//     zvfs_write(file, buffer, strlen(buffer));
+//     char rbuffer[BUFFER_SIZE] = {0};
+//     zvfs_read(file, rbuffer, BUFFER_SIZE);
+//     zvfs_close(file);
+//     free(file);
+//     zvfs_unmount(fs);
+//     free(fs);
+//     return 0;
+// }
