@@ -1,39 +1,33 @@
-
-#include"zvfs.h"
+#include "zvfs.h"
 #define BUFFER_SIZE 512
 // nvme bdev blob blobstore channel
 
-
 #if ENABLE_HOOK
-//fd操作
+// fd操作
 
-
-
-
-static struct zvfs_file_s *file_table[YQ_MAX_FD] = {0};
-
+struct zvfs_file_s *file_table[YQ_MAX_FD] = {0};
+struct spdk_thread *global_thread = NULL;
 void yq_destory_fd(int fd)
 {
-    //把这个fd销毁
+    // 把这个fd销毁
     if (fd < 0 || fd >= YQ_MAX_FD)
     {
-        printf("yq_destory_fd:fd error %d", fd);
-        return ;
+        SPDK_NOTICELOG("yq_destory_fd:fd error %d", fd);
+        return;
     }
     syscall(SYS_close, fd);
 }
 
 int yq_get_fd_fromlinux()
 {
-    //这里就是从linux获取一个fd
+    // 这里就是从linux获取一个fd
     int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (fd < 0 || fd >= YQ_MAX_FD)
     {
-        printf("yq_get_fd_fromlinux:fd error %d", fd);
+        SPDK_NOTICELOG("yq_get_fd_fromlinux:fd error %d", fd);
         return -1;
     }
-    return -1;
-
+    return fd;
 }
 
 struct zvfs_file_s *yq_get_filefromfd(int fd)
@@ -41,15 +35,73 @@ struct zvfs_file_s *yq_get_filefromfd(int fd)
     return file_table[fd];
 }
 
-#endif
+// 文件名到文件的映射hash
 
+// 目前只使用俩个函数，一个是增加path->file的映射，一个是查找path->file
+
+static struct rte_hash *path_hash;
+
+static int yq_add_pathtofile(zvfs_file_t *file)
+{
+    // 这个是插入文件和path之间的映射
+    char key[FILENAME_LENGTH] = {0};
+    size_t len = strnlen((const char *)file->filename, sizeof(key));
+    if (len >= sizeof(key))
+    {
+        SPDK_NOTICELOG("pathname errno\n");
+        return -1;
+    }
+    memcpy(key, file->filename, len);
+    if (path_hash == NULL)
+    {
+        // 这里是对hash表的初始化
+        const struct rte_hash_parameters params =
+        {
+            .name = "yqpath",
+            .entries = 1024,
+            .key_len = sizeof(key),
+            .socket_id = rte_socket_id(),
+        };
+        path_hash = rte_hash_create(&params);
+        if (path_hash == NULL)
+        {
+            SPDK_NOTICELOG("create hash errno\n");
+            return -1;
+        }
+    }
+    return rte_hash_add_key_data(path_hash, key, file);
+}
+
+static zvfs_file_t *yq_get_filefrompath(const char *path)
+{
+    char key[FILENAME_LENGTH] = {0};
+    void *data = NULL; // 这里是用来存放我们取到的file结构体的
+    if (path_hash == NULL)
+    {
+        return NULL;
+    }
+    size_t len = strnlen(path, sizeof(key));
+    if (len >= sizeof(key))
+    {
+        SPDK_NOTICELOG("pathname errno\n");
+        return NULL;
+    }
+    memcpy(key, path, len);
+    if (rte_hash_lookup_data(path_hash, key, &data) < 0)
+    {
+        return NULL;
+    }
+    return (zvfs_file_t *)data;
+}
+
+#endif
 
 static bool waiter(struct spdk_thread *thread, spdk_msg_fn start_fn, void *ctx, bool *finished)
 {
     int rc = spdk_thread_send_msg(thread, start_fn, ctx);
     if (rc != 0)
     {
-        SPDK_ERRLOG("send message failed: rc=%d\n", rc);
+        SPDK_NOTICELOG("send message failed: rc=%d\n", rc);
         exit(EXIT_FAILURE);
     }
 
@@ -59,7 +111,6 @@ static bool waiter(struct spdk_thread *thread, spdk_msg_fn start_fn, void *ctx, 
     }
 
     return true;
-
 }
 
 static void zvfs_spdk_bs_unload_cb(void *cb_arg, int bserrno)
@@ -67,7 +118,6 @@ static void zvfs_spdk_bs_unload_cb(void *cb_arg, int bserrno)
     struct zvfs_s *fs = (struct zvfs_s *)cb_arg;
     fs->finished = true;
     SPDK_NOTICELOG("unload finish\n");
-
 }
 static void zvfs_do_unmount(void *arg)
 {
@@ -80,7 +130,6 @@ static void zvfs_do_unmount(void *arg)
         }
         spdk_bs_unload(fs->blobstore, zvfs_spdk_bs_unload_cb, fs);
     }
-
 }
 static void zvfs_spdk_blob_delete_cb(void *cb_arg, int bserrno)
 {
@@ -90,24 +139,19 @@ static void zvfs_spdk_blob_delete_cb(void *cb_arg, int bserrno)
     spdk_free(file->read_buffer);
     file->finished = true;
     SPDK_NOTICELOG("close finish\n");
-
 }
-
 
 static void zvfs_spdk_blob_close_cb(void *cb_arg, int bserrno)
 {
 
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     spdk_bs_delete_blob(file->fs->blobstore, file->blob_id, zvfs_spdk_blob_delete_cb, file);
-
-
 }
 static void zvfs_do_close(void *cb_arg)
 {
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     spdk_blob_close(file->blob, zvfs_spdk_blob_close_cb, file);
 }
-
 
 static void zvfs_spdk_blob_read_cb(void *cb_arg, int bserrno)
 {
@@ -123,7 +167,6 @@ static void zvfs_do_read(void *cb_arg)
     spdk_blob_io_read(file->blob, file->fs->channel, file->read_buffer, 0, 1, zvfs_spdk_blob_read_cb, file);
 }
 
-
 static void zvfs_spdk_blob_write_cb(void *cb_arg, int bserrno)
 {
 
@@ -132,15 +175,11 @@ static void zvfs_spdk_blob_write_cb(void *cb_arg, int bserrno)
     SPDK_NOTICELOG("write finish\n");
 }
 
-
-
-
 static void zvfs_do_write(void *cb_arg)
 {
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     spdk_blob_io_write(file->blob, file->fs->channel, file->write_buffer, 0, 1, zvfs_spdk_blob_write_cb, file);
 }
-
 
 static void zvfs_spdk_blob_sync_cb(void *cb_arg, int bserrno)
 {
@@ -159,7 +198,6 @@ static void zvfs_spdk_blob_sync_cb(void *cb_arg, int bserrno)
 
     file->finished = true;
     SPDK_NOTICELOG("open finish\n");
-
 }
 
 static void zvfs_spdk_blob_resize_cb(void *cb_arg, int bserrno)
@@ -181,7 +219,6 @@ static void zvfs_spdk_bs_open_blob_cb(void *cb_arg, struct spdk_blob *blb, int b
 
     file->fs->free_cluster_count = free_cluster;
     spdk_blob_resize(blb, free_cluster, zvfs_spdk_blob_resize_cb, file);
-
 }
 
 static void zvfs_spdk_bs_create_blob_cb(void *cb_arg, spdk_blob_id blobid, int bserrno)
@@ -192,14 +229,11 @@ static void zvfs_spdk_bs_create_blob_cb(void *cb_arg, spdk_blob_id blobid, int b
     spdk_bs_open_blob(file->fs->blobstore, blobid, zvfs_spdk_bs_open_blob_cb, file);
 }
 
-
 static void zvfs_do_open(void *arg)
 {
     zvfs_file_t *file = (zvfs_file_t *)arg;
     spdk_bs_create_blob(file->fs->blobstore, zvfs_spdk_bs_create_blob_cb, file);
 }
-
-
 
 static void zvfs_spdk_bs_init_cb(void *cb_arg, struct spdk_blob_store *bs, int bserrno)
 {
@@ -215,7 +249,7 @@ static void zvfs_spdk_bs_init_cb(void *cb_arg, struct spdk_blob_store *bs, int b
     }
     fs->finished = true;
     SPDK_NOTICELOG("mount finished\n");
-    //spdk_bs_create_blob(bs, zvfs_spdk_bs_create_blob_cb, fs);
+    // spdk_bs_create_blob(bs, zvfs_spdk_bs_create_blob_cb, fs);
 }
 
 static void zvfs_spdk_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *event_ctx)
@@ -231,22 +265,22 @@ static void zvfs_entry(void *arg)
                                          &bs_dev);
     if (rc != 0)
     {
-        return ;
+        return;
     }
     spdk_bs_init(bs_dev, NULL, zvfs_spdk_bs_init_cb, fs);
     SPDK_NOTICELOG("zvfs_entry\n");
 }
 
-//filesystem
+// filesystem
 
-//load
+// load
 
 static int zvfs_mount(struct zvfs_s *fs)
 {
     fs->finished = false;
     return waiter(global_thread, zvfs_entry, fs, &fs->finished);
 }
-//unload
+// unload
 
 static int zvfs_unmount(struct zvfs_s *fs)
 {
@@ -254,8 +288,7 @@ static int zvfs_unmount(struct zvfs_s *fs)
     return waiter(global_thread, zvfs_do_unmount, fs, &fs->finished);
 }
 
-
-//file
+// file
 
 // open
 
@@ -263,7 +296,6 @@ static int zvfs_open(struct zvfs_file_s *file)
 {
     file->finished = false;
     return waiter(global_thread, zvfs_do_open, file, &file->finished);
-
 }
 
 // read
@@ -280,8 +312,6 @@ static int zvfs_write(zvfs_file_t *file, const uint8_t *buffer, size_t count)
     file->finished = false;
     memcpy(file->write_buffer, buffer, count);
     return waiter(global_thread, zvfs_do_write, file, &file->finished);
-
-
 }
 // close
 
@@ -290,7 +320,6 @@ static int zvfs_close(zvfs_file_t *file)
     file->finished = false;
     return waiter(global_thread, zvfs_do_close, file, &file->finished);
 }
-
 
 static const char *json_file = "/home/gyq2/spdk/build/examples/zvfs.json";
 
@@ -326,7 +355,6 @@ static void json_app_load_done(int rc, void *ctx)
     SPDK_NOTICELOG("JSON loaded: %s\n", json_file);
 }
 
-
 static void zvfs_json_load_fn(void *arg)
 {
     spdk_subsystem_init(json_app_load_done, arg);
@@ -352,24 +380,116 @@ static int zvfs_env_setup(void)
     return 0;
 }
 
-
 #if ENABLE_HOOK
-//这里是对上面的接口的整合
+// 这里是对上面的接口的整合
+
+static zvfs_t *fs = NULL; // 这里我们全局只使用一个fs，所以不需要管理，我们直接定义一个全局的就行
+
 int nopen(const char *pathname, int flags)
 {
-
+    // 首先是看一下之前是否mountfs
+    static bool mounted; // 这里使用static是我们所有调用open函数的时候，我们只会mounted一次
+    if (!mounted)
+    {
+        if (zvfs_env_setup() != 0)
+        {
+            SPDK_NOTICELOG("setup errno\n");
+            return -1;
+        }
+        fs = calloc(1, sizeof(zvfs_t));
+        if (fs == NULL)
+        {
+            SPDK_NOTICELOG("room not enough\n");
+            return -1;
+        }
+        zvfs_mount(fs);
+        mounted = true;
+    }
+    if (pathname == NULL)
+    {
+        SPDK_NOTICELOG("nopen:pathname arg errno\n");
+        return -1;
+    }
+    zvfs_file_t *file = yq_get_filefrompath(pathname);
+    if (file == NULL && !(flags & O_CREAT))
+    {
+        SPDK_NOTICELOG("nopen:dont have this file\n");
+        return -1;
+    }
+    // 接下来就有俩种情况，一种是file==NULL需要我们创建文件，建立映射，分配fd
+    // 另一种是file！=NULL，需要我们找到文件，分配fd
+    if (file != NULL && file->fd >= 0)
+    {
+        // 这里打开之前的file的fd需要被我们置为-1
+        SPDK_NOTICELOG("nopen:file has been open\n");
+        return -1;
+    }
+    int fd = yq_get_fd_fromlinux();
+    if (fd < 0)
+    {
+        return -1;
+    }
+    if (file == NULL)
+    {
+        // 创建file
+        file = calloc(1, sizeof(struct zvfs_file_s));
+        if (file == NULL)
+        {
+            yq_destory_fd(fd);
+            SPDK_NOTICELOG("nopen:room dont enought\n");
+            return -1;
+        }
+        file->fs = fs;
+        size_t len = strlen(pathname);
+        memcpy(file->filename, pathname, len + 1);
+        zvfs_open(file);
+        int rc = yq_add_pathtofile(file);
+        if (rc < 0)
+        {
+            zvfs_close(file);
+            free(file);
+            yq_destory_fd(fd);
+            SPDK_NOTICELOG("add hash errno\n");
+            return -1;
+        }
+    }
+    file->fd = fd;
+    file_table[fd] = file;
+    return fd;
 }
 ssize_t nread(int fd, void *buf, size_t count)
 {
-
+    zvfs_file_t *file = yq_get_filefromfd(fd);
+    if (file == NULL)
+    {
+        SPDK_NOTICELOG("nread: file dont open\n");
+        return -1;
+    }
+    return zvfs_read(file, buf, count);
 }
 ssize_t nwrite(int fd, const void *buf, size_t count)
 {
-
+    zvfs_file_t *file = yq_get_filefromfd(fd);
+    if (file == NULL)
+    {
+        SPDK_NOTICELOG("nwrite:file dont open\n");
+        return -1;
+    }
+    return zvfs_write(file, buf, count);
 }
 int nclose(int fd)
 {
+    if (fd < 0 || fd >= YQ_MAX_FD || file_table[fd] == NULL)
+    {
+        SPDK_NOTICELOG("nclose: invalid fd %d\n", fd);
+        return -1;
+    }
 
+    zvfs_file_t *file = file_table[fd];
+    file_table[fd] = NULL;
+    file->fd = -1;
+    yq_destory_fd(fd);
+    return 0;
 }
 #endif
 // int main(int argc, char *argv[])

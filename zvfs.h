@@ -11,13 +11,20 @@
 #include <spdk/file.h>
 #include <spdk/rpc.h>
 #include <stdlib.h>
-
+#include <errno.h>
+#include <fcntl.h>
+#include <string.h>
+#include <rte_hash.h>
+#include <rte_lcore.h>
+#include <sys/eventfd.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #define ENABLE_HOOK 1
 #define BUFFER_SIZE 512
 
 #define YQ_MAX_FD 2048
-struct spdk_thread *global_thread = NULL;
+extern struct spdk_thread *global_thread;
 
 typedef struct zvfs_context_s
 {
@@ -43,7 +50,6 @@ typedef struct zvfs_s
     struct spdk_io_channel *channel;
     bool finished;
 } zvfs_t;
-
 
 #if !ENABLE_HOOK
 typedef struct zvfs_operation_s
@@ -80,9 +86,15 @@ typedef struct zvfs_file_operation_s
 
 } zvfs_file_operation_t;
 
-
 #endif
 extern struct zvfs_file_s *file_table[YQ_MAX_FD];
+#if ENABLE_HOOK
 
+// 四个接口的声明
+int nopen(const char *pathname, int flags);
+ssize_t nread(int fd, void *buf, size_t count);
+ssize_t nwrite(int fd, const void *buf, size_t count);
+int nclose(int fd);
+#endif
 
 #endif
