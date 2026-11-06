@@ -19,8 +19,10 @@
 #include <sys/eventfd.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include<sys/stat.h>
 
-#define ENABLE_HOOK 1
+
+#define ENABLE_FIO 1
 #define BUFFER_SIZE 512
 
 #define YQ_MAX_FD 2048
@@ -51,50 +53,39 @@ typedef struct zvfs_s
     bool finished;
 } zvfs_t;
 
-#if !ENABLE_HOOK
-typedef struct zvfs_operation_s
-{
-    int (*mount)(struct zvfs_s *fs);
-    int (*unmount)(struct zvfs_s *fs);
 
-} zvfs_operation_t;
-
-#endif
 typedef struct zvfs_file_s
 {
-#if ENABLE_HOOK
-    int fd;
-#endif
 
+    int fd;
     uint8_t filename[FILENAME_LENGTH];
     spdk_blob_id blob_id;
     struct spdk_blob *blob;
+#if ENABLE_FIO
+    off64_t offset;//这个是给lseek使用的参数
+    off64_t size;//这个是给stat使用的字段
+#endif
     zvfs_t *fs;
     uint8_t *write_buffer;
     uint8_t *read_buffer;
     bool finished;
 
 } zvfs_file_t;
-#if !ENABLE_HOOK
 
-typedef struct zvfs_file_operation_s
-{
-    int (*open)(struct zvfs_file_s *fs);
-    int (*write)(struct zvfs_file_s *fs);
-    int (*read)(struct zvfs_file_s *fs);
-    int (*close)(struct zvfs_file_s *fs);
-
-} zvfs_file_operation_t;
-
-#endif
 extern struct zvfs_file_s *file_table[YQ_MAX_FD];
-#if ENABLE_HOOK
 
 // 四个接口的声明
 int nopen(const char *pathname, int flags);
 ssize_t nread(int fd, void *buf, size_t count);
 ssize_t nwrite(int fd, const void *buf, size_t count);
 int nclose(int fd);
+
+
+#if ENABLE_FIO
+off64_t nlseek(int fd, off64_t offset, int whence);
+int nstat(const char *pathname, struct stat64 *st);
+ssize_t npread(int fd, void *buf, size_t count, off64_t offset);
+ssize_t npwrite(int fd, const void *buf, size_t count, off64_t offset);
 #endif
 
 #endif

@@ -34,6 +34,20 @@ int open(const char *pathname, int flags, ...)
     }
     return open_f(pathname, flags);
 }
+#if ENABLE_FIO
+int open64(const char *pathname, int flags, ...)
+{
+    mode_t mode = 0;
+    if ((flags & O_CREAT) || (flags & O_TMPFILE) == O_TMPFILE)
+    {
+        va_list args;
+        va_start(args, flags);
+        mode = va_arg(args, mode_t);
+        va_end(args);
+    }
+    return open(pathname, flags | O_LARGEFILE, mode);
+}
+#endif
 ssize_t read(int fd, void *buf, size_t count)
 {
     static ssize_t (*read_f)(int, void *, size_t);
@@ -73,3 +87,73 @@ int close(int fd)
     }
     return close_f(fd);
 }
+
+
+#if ENABLE_FIO
+
+off64_t lseek64(int fd, off64_t offset, int whence)
+{
+    static off64_t (*lseek_f)(int, off64_t, int);
+
+    if (is_inner(fd))
+    {
+        return nlseek(fd, offset, whence);
+    }
+
+    if (lseek_f == NULL)
+    {
+        lseek_f = dlsym(RTLD_NEXT, "lseek64");
+    }
+
+    return lseek_f(fd, offset, whence);
+}
+int stat64(const char *pathname, struct stat64 *st)
+{
+    static int (*stat_f)(const char *, struct stat64 *);
+
+    if (strcmp(pathname, "a.txt") == 0)
+    {
+        return nstat(pathname, st);
+    }
+
+    if (stat_f == NULL)
+    {
+        stat_f = dlsym(RTLD_NEXT, "stat64");
+    }
+
+    return stat_f(pathname, st);
+}
+ssize_t pread64(int fd, void *buf, size_t count, off64_t offset)
+{
+    static ssize_t (*pread_f)(int, void *, size_t, off64_t);
+
+    if (is_inner(fd))
+    {
+        return npread(fd, buf, count, offset);
+    }
+
+    if (pread_f == NULL)
+    {
+        pread_f = dlsym(RTLD_NEXT, "pread64");
+    }
+
+    return pread_f(fd, buf, count, offset);
+}
+
+ssize_t pwrite64(int fd, const void *buf, size_t count, off64_t offset)
+{
+    static ssize_t (*pwrite_f)(int, const void *, size_t, off64_t);
+
+    if (is_inner(fd))
+    {
+        return npwrite(fd, buf, count, offset);
+    }
+
+    if (pwrite_f == NULL)
+    {
+        pwrite_f = dlsym(RTLD_NEXT, "pwrite64");
+    }
+
+    return pwrite_f(fd, buf, count, offset);
+}
+#endif

@@ -1,8 +1,8 @@
 #include "zvfs.h"
 #define BUFFER_SIZE 512
 // nvme bdev blob blobstore channel
+#define DEBUG 0
 
-#if ENABLE_HOOK
 // fd操作
 
 struct zvfs_file_s *file_table[YQ_MAX_FD] = {0};
@@ -94,7 +94,6 @@ static zvfs_file_t *yq_get_filefrompath(const char *path)
     return (zvfs_file_t *)data;
 }
 
-#endif
 
 static bool waiter(struct spdk_thread *thread, spdk_msg_fn start_fn, void *ctx, bool *finished)
 {
@@ -117,7 +116,9 @@ static void zvfs_spdk_bs_unload_cb(void *cb_arg, int bserrno)
 {
     struct zvfs_s *fs = (struct zvfs_s *)cb_arg;
     fs->finished = true;
+#if DEBUG
     SPDK_NOTICELOG("unload finish\n");
+#endif
 }
 static void zvfs_do_unmount(void *arg)
 {
@@ -138,7 +139,9 @@ static void zvfs_spdk_blob_delete_cb(void *cb_arg, int bserrno)
     spdk_free(file->write_buffer);
     spdk_free(file->read_buffer);
     file->finished = true;
+#if DEBUG
     SPDK_NOTICELOG("close finish\n");
+#endif
 }
 
 static void zvfs_spdk_blob_close_cb(void *cb_arg, int bserrno)
@@ -156,7 +159,9 @@ static void zvfs_do_close(void *cb_arg)
 static void zvfs_spdk_blob_read_cb(void *cb_arg, int bserrno)
 {
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
+#if DEBUG
     SPDK_NOTICELOG("read buffer: %s\n", file->read_buffer);
+#endif
     file->finished = true;
 }
 
@@ -164,21 +169,37 @@ static void zvfs_do_read(void *cb_arg)
 {
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     memset(file->read_buffer, 0, BUFFER_SIZE);
-    spdk_blob_io_read(file->blob, file->fs->channel, file->read_buffer, 0, 1, zvfs_spdk_blob_read_cb, file);
+#if ENABLE_FIO
+    uint64_t io_offset = file->offset / file->fs->unit_size;
+#else
+    uint64_t io_offset = 0;
+#endif
+    spdk_blob_io_read(file->blob, file->fs->channel, file->read_buffer, io_offset, 1, zvfs_spdk_blob_read_cb, file);
 }
 
 static void zvfs_spdk_blob_write_cb(void *cb_arg, int bserrno)
 {
-
+    if (bserrno != 0)
+    {
+        SPDK_ERRLOG("blob write failed: %d\n", bserrno);
+        exit(EXIT_FAILURE);
+    }
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     file->finished = true;
+#if DEBUG
     SPDK_NOTICELOG("write finish\n");
+#endif
 }
 
 static void zvfs_do_write(void *cb_arg)
 {
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
-    spdk_blob_io_write(file->blob, file->fs->channel, file->write_buffer, 0, 1, zvfs_spdk_blob_write_cb, file);
+#if ENABLE_FIO
+    uint64_t io_offset = file->offset / file->fs->unit_size;
+#else
+    uint64_t io_offset = 0;
+#endif
+    spdk_blob_io_write(file->blob, file->fs->channel, file->write_buffer, io_offset, 1, zvfs_spdk_blob_write_cb, file);
 }
 
 static void zvfs_spdk_blob_sync_cb(void *cb_arg, int bserrno)
@@ -195,9 +216,14 @@ static void zvfs_spdk_blob_sync_cb(void *cb_arg, int bserrno)
     {
         return;
     }
+#if ENABLE_FIO
+    file->offset = 0;
+#endif
 
     file->finished = true;
+#if DEBUG
     SPDK_NOTICELOG("open finish\n");
+#endif
 }
 
 static void zvfs_spdk_blob_resize_cb(void *cb_arg, int bserrno)
@@ -206,7 +232,9 @@ static void zvfs_spdk_blob_resize_cb(void *cb_arg, int bserrno)
 
     uint64_t total = spdk_blob_get_num_clusters(file->blob);
     file->fs->num_cluster = total;
+#if DEBUG
     SPDK_NOTICELOG("resize blob: %" PRIu64 "\n", total);
+#endif
     spdk_blob_sync_md(file->blob, zvfs_spdk_blob_sync_cb, file);
 }
 
@@ -215,8 +243,9 @@ static void zvfs_spdk_bs_open_blob_cb(void *cb_arg, struct spdk_blob *blb, int b
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     file->blob = blb;
     uint64_t free_cluster = spdk_bs_free_cluster_count(file->fs->blobstore);
+#if DEBUG
     SPDK_NOTICELOG("free_cluster: %" PRIu64 "\n", free_cluster);
-
+#endif
     file->fs->free_cluster_count = free_cluster;
     spdk_blob_resize(blb, free_cluster, zvfs_spdk_blob_resize_cb, file);
 }
@@ -225,7 +254,9 @@ static void zvfs_spdk_bs_create_blob_cb(void *cb_arg, spdk_blob_id blobid, int b
 {
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     file->blob_id = blobid;
+#if DEBUG
     SPDK_NOTICELOG("blobid : %" PRIu64 "\n", blobid);
+#endif
     spdk_bs_open_blob(file->fs->blobstore, blobid, zvfs_spdk_bs_open_blob_cb, file);
 }
 
@@ -241,34 +272,42 @@ static void zvfs_spdk_bs_init_cb(void *cb_arg, struct spdk_blob_store *bs, int b
     uint64_t io_unit_size = spdk_bs_get_io_unit_size(bs);
     fs->unit_size = io_unit_size;
     fs->blobstore = bs;
+#if DEBUG
     SPDK_NOTICELOG("io_unit_size : %" PRIu64 "\n", io_unit_size);
+#endif
     fs->channel = spdk_bs_alloc_io_channel(fs->blobstore);
     if (fs->channel == NULL)
     {
         return;
     }
     fs->finished = true;
+#if DEBUG
     SPDK_NOTICELOG("mount finished\n");
+#endif
     // spdk_bs_create_blob(bs, zvfs_spdk_bs_create_blob_cb, fs);
 }
 
 static void zvfs_spdk_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *event_ctx)
 {
+#if DEBUG
     SPDK_NOTICELOG("zvfs_spdk_bdev_cb\n");
+#endif
 }
 
 static void zvfs_entry(void *arg)
 {
     struct zvfs_s *fs = (struct zvfs_s *)arg;
     struct spdk_bs_dev *bs_dev = NULL;
-    int rc = spdk_bdev_create_bs_dev_ext("Malloc0", zvfs_spdk_bdev_event_cb, NULL,
+    int rc = spdk_bdev_create_bs_dev_ext("Nvme0n1", zvfs_spdk_bdev_event_cb, NULL,
                                          &bs_dev);
     if (rc != 0)
     {
         return;
     }
     spdk_bs_init(bs_dev, NULL, zvfs_spdk_bs_init_cb, fs);
+#if DEBUG
     SPDK_NOTICELOG("zvfs_entry\n");
+#endif
 }
 
 // filesystem
@@ -301,17 +340,92 @@ static int zvfs_open(struct zvfs_file_s *file)
 // read
 static int zvfs_read(zvfs_file_t *file, uint8_t *buffer, size_t count)
 {
+
+#if ENABLE_FIO
+    size_t copied = 0;
+    size_t unit_size = file->fs->unit_size;
+
+    while (copied < count)
+    {
+        size_t buffer_offset = file->offset % unit_size;
+        size_t bytes = unit_size - buffer_offset;
+
+        if (bytes > count - copied)
+        {
+            bytes = count - copied;
+        }
+
+        file->finished = false;
+        waiter(global_thread, zvfs_do_read, file, &file->finished);
+
+        memcpy(buffer + copied,
+               file->read_buffer + buffer_offset,
+               bytes);
+
+        file->offset += bytes;
+        copied += bytes;
+    }
+
+    return copied;
+#else
     file->finished = false;
     waiter(global_thread, zvfs_do_read, file, &file->finished);
     memcpy(buffer, file->read_buffer, strlen(file->read_buffer));
     return strlen(file->read_buffer);
+#endif
 }
 // write
 static int zvfs_write(zvfs_file_t *file, const uint8_t *buffer, size_t count)
 {
+#if ENABLE_FIO
+    size_t written = 0;
+    size_t unit_size = file->fs->unit_size;
+
+    while (written < count)
+    {
+        size_t buffer_offset = file->offset % unit_size;
+        size_t bytes = unit_size - buffer_offset;
+
+        if (bytes > count - written)
+        {
+            bytes = count - written;
+        }
+
+        /* 部分覆盖，先保留该单元的原数据。 */
+        if (buffer_offset != 0 || bytes != unit_size)
+        {
+            file->finished = false;
+            waiter(global_thread, zvfs_do_read,
+                   file, &file->finished);
+
+            memcpy(file->write_buffer,
+                   file->read_buffer,
+                   unit_size);
+        }
+
+        /* 覆盖本次要修改的部分。 */
+        memcpy(file->write_buffer + buffer_offset,
+               buffer + written,
+               bytes);
+
+        file->finished = false;
+        waiter(global_thread, zvfs_do_write,
+               file, &file->finished);
+
+        file->offset += bytes;
+        if (file->offset > file->size)
+        {
+            file->size = file->offset;
+        }
+        written += bytes;
+    }
+
+    return written;
+#else
     file->finished = false;
     memcpy(file->write_buffer, buffer, count);
     return waiter(global_thread, zvfs_do_write, file, &file->finished);
+#endif
 }
 // close
 
@@ -352,7 +466,9 @@ static void json_app_load_done(int rc, void *ctx)
     }
 
     *(bool *)ctx = true;
+#if DEBUG
     SPDK_NOTICELOG("JSON loaded: %s\n", json_file);
+#endif
 }
 
 static void zvfs_json_load_fn(void *arg)
@@ -376,11 +492,14 @@ static int zvfs_env_setup(void)
     spdk_set_thread(global_thread);
     bool done = false;
     waiter(global_thread, zvfs_json_load_fn, &done, &done);
+
+#if DEBUG
     SPDK_NOTICELOG("json_app_load_done complete\n");
+#endif
     return 0;
 }
 
-#if ENABLE_HOOK
+
 // 这里是对上面的接口的整合
 
 static zvfs_t *fs = NULL; // 这里我们全局只使用一个fs，所以不需要管理，我们直接定义一个全局的就行
@@ -455,6 +574,9 @@ int nopen(const char *pathname, int flags)
     }
     file->fd = fd;
     file_table[fd] = file;
+#if ENABLE_FIO
+    file->offset = 0;
+#endif
     return fd;
 }
 ssize_t nread(int fd, void *buf, size_t count)
@@ -491,27 +613,64 @@ int nclose(int fd)
     yq_destory_fd(fd);
     return 0;
 }
-#endif
-// int main(int argc, char *argv[])
-// {
-//     if (0 != zvfs_env_setup())
-//     {
-//         return -1;
-//     }
-//     SPDK_NOTICELOG("init success\n");
-//     zvfs_t *fs = calloc(1, sizeof(zvfs_t));
-//     zvfs_mount(fs);
+#if ENABLE_FIO
+off64_t nlseek(int fd, off64_t offset, int whence)
+{
+    zvfs_file_t *file = yq_get_filefromfd(fd);
+    if (file == NULL)
+    {
+        SPDK_NOTICELOG("dont open this fd\n");
+        return -1;
+    }
+    if (whence != SEEK_SET)
+    {
+        SPDK_NOTICELOG("dont have this function\n");
+        return -1;
+    }
+    file->offset = offset;
+    return file->offset;
+}
+int nstat(const char *pathname, struct stat64 *st)
+{
+    zvfs_file_t *file = yq_get_filefrompath(pathname);
 
-//     zvfs_file_t *file = calloc(1, sizeof(zvfs_file_t));
-//     file->fs = fs;
-//     zvfs_open(file);
-//     char *buffer = "abcdefghigklmnopqrstuvwxyz";
-//     zvfs_write(file, buffer, strlen(buffer));
-//     char rbuffer[BUFFER_SIZE] = {0};
-//     zvfs_read(file, rbuffer, BUFFER_SIZE);
-//     zvfs_close(file);
-//     free(file);
-//     zvfs_unmount(fs);
-//     free(fs);
-//     return 0;
-// }
+    if (file == NULL)
+    {
+        SPDK_NOTICELOG("dont open this fd\n");
+        return -1;
+    }
+
+    memset(st, 0, sizeof(*st));
+
+    st->st_mode = S_IFREG | 0644;
+    st->st_nlink = 1;
+    st->st_size = file->size;
+    st->st_blksize = file->fs->unit_size;
+
+    return 0;
+
+}
+ssize_t npread(int fd, void *buf, size_t count, off64_t offset)
+{
+    zvfs_file_t *file = yq_get_filefromfd(fd);
+    off64_t saved_offset = file->offset;
+
+    nlseek(fd, offset, SEEK_SET);
+    ssize_t result = nread(fd, buf, count);
+    nlseek(fd, saved_offset, SEEK_SET);
+
+    return result;
+}
+
+ssize_t npwrite(int fd, const void *buf, size_t count, off64_t offset)
+{
+    zvfs_file_t *file = yq_get_filefromfd(fd);
+    off64_t saved_offset = file->offset;
+
+    nlseek(fd, offset, SEEK_SET);
+    ssize_t result = nwrite(fd, buf, count);
+    nlseek(fd, saved_offset, SEEK_SET);
+
+    return result;
+}
+#endif

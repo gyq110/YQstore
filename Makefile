@@ -13,7 +13,7 @@ CFLAGS += $(ENV_CFLAGS)
 DPDK_LIB_LIST += rte_hash rte_rcu
 
 # 本项目使用的 SPDK 库
-SPDK_LIB_LIST = blob blob_bdev bdev_malloc event event_bdev
+SPDK_LIB_LIST = blob blob_bdev bdev_nvme event event_bdev
 
 include $(SPDK_ROOT_DIR)/mk/spdk.app_vars.mk
 
