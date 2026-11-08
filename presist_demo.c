@@ -7,24 +7,28 @@
 #include <unistd.h>
 
 enum { PAYLOAD_SIZE = 512 };
-static const char pathname[] = "a.txt";
+static const char pathname[] = "/zvfs/db/a.txt";
 
 static int write_file(const unsigned char *expected, int flags)
 {
+
     int fd = open(pathname, flags, 0644);
-    if (fd < 0) {
+    if (fd < 0)
+    {
         perror("open a.txt for writing");
         return 1;
     }
 
     ssize_t n = write(fd, expected, PAYLOAD_SIZE);
-    if (n != PAYLOAD_SIZE) {
+    if (n != PAYLOAD_SIZE)
+    {
         fprintf(stderr, "write returned %zd, expected %d\n", n, PAYLOAD_SIZE);
         close(fd);
         return 1;
     }
 
-    if (close(fd) < 0) {
+    if (close(fd) < 0)
+    {
         perror("close after write");
         return 1;
     }
@@ -37,19 +41,22 @@ static int read_file(const unsigned char *expected, const char *phase)
     struct stat64 st;
     unsigned char actual[PAYLOAD_SIZE];
 
-    if (stat64(pathname, &st) < 0) {
+    if (stat64(pathname, &st) < 0)
+    {
         perror("stat64 a.txt");
         return 1;
     }
 
     int fd = open(pathname, O_RDONLY);
-    if (fd < 0) {
+    if (fd < 0)
+    {
         perror("reopen a.txt");
         return 1;
     }
 
     ssize_t n = read(fd, actual, sizeof(actual));
-    if (close(fd) < 0) {
+    if (close(fd) < 0)
+    {
         perror("close after read");
         return 1;
     }
@@ -66,28 +73,38 @@ static int read_file(const unsigned char *expected, const char *phase)
 int main(int argc, char **argv)
 {
     if (argc != 2 ||
-        (strcmp(argv[1], "write") != 0 &&
-         strcmp(argv[1], "rewrite") != 0 &&
-         strcmp(argv[1], "read") != 0)) {
+            (strcmp(argv[1], "write") != 0 &&
+             strcmp(argv[1], "rewrite") != 0 &&
+             strcmp(argv[1], "read") != 0))
+    {
         fprintf(stderr, "usage: %s write|rewrite|read\n", argv[0]);
         return 2;
     }
 
     unsigned char expected[PAYLOAD_SIZE];
-    for (size_t i = 0; i < sizeof(expected); i++) {
+    for (size_t i = 0; i < sizeof(expected); i++)
+    {
         expected[i] = (unsigned char)(i * 37u + 0x5au);
     }
 
-    if (strcmp(argv[1], "read") == 0) {
+    if (strcmp(argv[1], "read") == 0)
+    {
         return read_file(expected, "new-process mount");
     }
 
     int flags = O_WRONLY;
-    if (strcmp(argv[1], "write") == 0) {
+    if (strcmp(argv[1], "write") == 0)
+    {
+        if (mkdir("/zvfs/db", 0755) < 0)
+        {
+            perror("mkdir /zvfs/db");
+            return 1;
+        }
         flags |= O_CREAT | O_EXCL;
     }
 
-    if (write_file(expected, flags) != 0) {
+    if (write_file(expected, flags) != 0)
+    {
         return 1;
     }
 

@@ -20,58 +20,14 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #include<sys/stat.h>
+#include"inode.h"
 
-
-#define ENABLE_FIO 1
+#define ENABLE_ROCKDB 1
 #define BUFFER_SIZE 512
-
-#define YQ_MAX_FD 2048
 extern struct spdk_thread *global_thread;
 
-typedef struct zvfs_context_s
-{
-    struct spdk_blob_store *blobstore;
-    spdk_blob_id blob_id;
-    struct spdk_blob *blob;
-    uint64_t free_cluster_count;
-    uint64_t num_cluster;
-    uint64_t unit_size;
-    uint8_t *write_buffer;
-    uint8_t *read_buffer;
-    struct spdk_io_channel *channel;
-} zvfs_context_t;
 
-#define FILENAME_LENGTH 128
-
-typedef struct zvfs_s
-{
-    struct spdk_blob_store *blobstore;
-    uint64_t unit_size;
-    uint64_t free_cluster_count;
-    uint64_t num_cluster;
-    struct spdk_io_channel *channel;
-    bool finished;
-} zvfs_t;
-
-
-typedef struct zvfs_file_s
-{
-
-    int fd;
-    uint8_t filename[FILENAME_LENGTH];
-    spdk_blob_id blob_id;
-    struct spdk_blob *blob;
-#if ENABLE_FIO
-    off64_t offset;//这个是给lseek使用的参数
-    off64_t size;//这个是给stat使用的字段
-#endif
-    zvfs_t *fs;
-    uint8_t *write_buffer;
-    uint8_t *read_buffer;
-    bool finished;
-
-} zvfs_file_t;
-
+extern zvfs_t *fs;
 extern struct zvfs_file_s *file_table[YQ_MAX_FD];
 
 // 四个接口的声明
@@ -80,12 +36,15 @@ ssize_t nread(int fd, void *buf, size_t count);
 ssize_t nwrite(int fd, const void *buf, size_t count);
 int nclose(int fd);
 
-
-#if ENABLE_FIO
 off64_t nlseek(int fd, off64_t offset, int whence);
 int nstat(const char *pathname, struct stat64 *st);
 ssize_t npread(int fd, void *buf, size_t count, off64_t offset);
 ssize_t npwrite(int fd, const void *buf, size_t count, off64_t offset);
-#endif
-
+int nmkdir(const char *pathname, mode_t mode);
+int nftruncate(int fd, off_t length);
+int nunlink(const char *pathname);
+bool zvfs_reclaim_inode(zvfs_inode_t *inode);
+int nrmdir(const char *pathname);
+int nrename(const char *oldpath, const char *newpath);
+int nstatvfs(const char *pathname, struct statvfs *buf);
 #endif

@@ -3,8 +3,8 @@
 SPDK_ROOT_DIR ?= /home/gyq2/spdk
 
 # 收集当前目录的业务源码，排除临时测试程序
-C_SRCS := zvfs.c shim.c
-LIB_HEADERS := zvfs.h shim.h
+C_SRCS := zvfs.c shim.c inode.c
+LIB_HEADERS := zvfs.h shim.h inode.h
 
 include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
