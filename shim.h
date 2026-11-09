@@ -40,5 +40,8 @@ int sync_file_range(int fd, off64_t offset, off64_t length, unsigned int flags);
 int fsync(int fd);
 int fdatasync(int fd);
 int fcntl(int fd, int cmd, ...);
-
+int feof(FILE *fp);
+int ferror(FILE *fp);
+void clearerr(FILE *fp);
+int fclose(FILE *fp);
 #endif

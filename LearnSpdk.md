@@ -419,3 +419,113 @@ Run status group 0 (all jobs):
 ### 目录结构完成的流程总结
 
 1. 
+
+
+
+
+### 实现的接口的讲解
+
+
+
+
+
+### rockdb是啥，是如何实现的。db_bench是啥，流程是啥
+
+#### rockdb
+这个rockdb是啥呢，他用官方来看就是一个嵌入式的存储引擎，在我看来，它就是一个存储库，相当于把底层的read，write这种直接操作文件的接口进行封装，可以对键值的存储和查询等操作，我们使用的时候需要把它引入，然后通过它提供的一系列接口来操作，不是中间件，中间件是一个独立运行的进程，我们通过网路来对其进行操作
+1. Memtable
+，当我们写入一条键值对之后，会首先把这条数据放到我们的内存表中，而不是磁盘里，这个就是Memtable
+2. WAL 这个是记录修改的日志
+3. Flush是把这个内存表里的数据写如何文件的动作，SST是写出来的文件
+4. Compaction是合并引用的SST，当我们以前写入苹果-》5，然后又要写入苹果-》8,就会把之前的苹果->5删点，然后把需要的东西放到苹果->8里面
+
+
+#### db_bench是啥
+是我们基于rockdb提供的接口实现一个测试程训
+1. write，按照key自增写入
+2. flush，把内存表写成sst，然后等待完成
+3. readrandom，随机挑key进行查询
+
+
+
+
+## 运行与调试
+
+### ASan,TSan,UBSan这个是之前dpdk的时候没有用上的工具，导致查并发和资源泄露浪费了很多时间，今日就具体了解一下这三个是啥，并使用进去
+
+
+
+#### ASan
+
+1. AddressSanitizer查看内存越界和对象释放之后继续使用
+2. 比如我们free(file)-->file->inode-->ASan就会报错heap-used-after-free
+3. 底层原理，维护一份shadowmemory，给地址做标记的表，用一个字节记录8个程序内存字节的可访问状态，对象边缘和刚释放的内存会标记为不可访问，插入的检查会在读写的时候查看这些标记
+
+
+#### TSan
+1. ThreadSanitizer查看数据竞争
+2. tsan会记录线程读写了哪些地址，会跟踪算，原子操作等同步时间，它判断俩个线程对统一地址的访问有没有被同步排出先后顺心，如果没有，且至少有一边在写，就可能报data race，把俩边的调用栈都打印出来
+
+
+
+#### UBSan
+1. UndefinedBehaviorSanitizer查C/C++语言规则被违反的地方
+2. 比如我们off_t end=offset+length如果超过off_t的表示范围，编译器就会给加法插入溢出检查，出错是报告具体行和操作数，也能用来检查非法位移，解引用为对齐指针等问题
+
+
+
+
+#### LSan
+1. LeakSanitizer查丢失引用的堆内存
+2. 这里是进程正常退出是，LSan从全局变量1，线程栈等位置沿着指针栈找还的内存，报告哪些已分配但是找不到的块，但是如果是我们的blob没有释放，这些是不会报错的，我们需要看proc/pid/fd和blob的创建，回收是否配对
+
+
+### 运行指令与运行结结果
+- 由于我们是在单线程里面，接口写完没有太大的问题，测试也跑过了，编译也通过了，没有上面说的问题
+
+#### 运行指令
+1. linux
+
+- 写操作和flush落盘操作
+```shell
+LD_PRELOAD= /home/gyq2/src/rocksdb/db_bench   --db=/tmp/rocksdb-bench --benchmarks=fillseq,flush   --num=100000 --threads=1 --compression_type=none --histogram=1 --sync=1
+```
+
+- 随机读操作
+```shell
+
+LD_PRELOAD= /home/gyq2/src/rocksdb/db_bench --db=/tmp/rocksdb-bench --benchmarks=readrandom --use_existing_db=1 --num=100000 --duration=30 --threads=1 --compression_type=none --histogram=1
+```
+
+2. zvfs
+
+- 写操作和flush落盘操作
+```shell
+LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so /home/gyq2/src/rocksdb/db_bench   --db=/zvfs/rocksdb-bench --benchmarks=fillseq,flush   --num=100000 --threads=1 --compression_type=none --histogram=1 --sync=1
+```
+
+- 随机读操作
+```shell
+LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so /home/gyq2/src/rocksdb/db_bench --db=/zvfs/rocksdb-bench --benchmarks=readrandom --use_existing_db=1 
+  --num=100000 --duration=30 --threads=1 --compression_type=none --histogram=1
+```
+3. 指令解析
+- LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so 这个是要链接的库
+- /home/gyq2/src/rocksdb/db_bench这里是我们测试的可执行文件
+- --db="$/tmp/rocksdb-kernel-sync-100k-$(date +%s)" 这个是我们数据库产生的文件要存储的地方
+- --benchmarks=fillseq,flush这里是我们要测试哪些功能，fillseq是key递增的生成数据存储 flush是把存储的数据落盘
+- --num=100000 这个是写入多少键值
+- --compression_type=none关闭sst的数据压缩
+- --histogram=1这个是输出延迟分布，我们关注的p99就是99%的数据在多少时间里面完成
+- --sync=1这个是同步操作，我们操作一次就进行落盘
+
+
+#### 运行结果以及性能分析
+
+
+
+#### 清理磁盘的指令
+
+
+
+

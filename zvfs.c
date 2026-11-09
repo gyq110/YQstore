@@ -201,8 +201,8 @@ static void zvfs_resize(zvfs_file_t *file, off_t length)
     }
     //这里扩容之后能就算结束了，我们还需要做的是把扩容了的空间置为0
     uint64_t old_size = file->inode->size;
-    uint64_t uint_size = fs->io_unit_size;
-    uint64_t first_unit = old_size / uint_size;
+    uint64_t unit_size = fs->io_unit_size;
+    uint64_t first_unit = old_size / unit_size;
     uint64_t end_unit = ((uint64_t)length - 1) / unit_size + 1;
     size_t tail = old_size % unit_size;
     if (tail != 0)
@@ -313,6 +313,34 @@ static int zvfs_write(zvfs_file_t *file, const uint8_t *buffer, size_t count)
 
     while (written < count)
     {
+        if (count == 0)
+        {
+            return 0;
+        }
+
+        off_t end;
+        if (__builtin_add_overflow(file->offset, count, &end))
+        {
+            errno = EFBIG;
+            return -1;
+        }
+
+        uint64_t capacity = spdk_blob_get_num_clusters(file->blob) *
+                            file->fs->cluster_size;
+
+        if ((uint64_t)end > capacity)
+        {
+            off_t new_capacity = end;
+            if (capacity <= INT64_MAX / 2 && capacity * 2 > (uint64_t)end)
+            {
+                new_capacity = (off_t)(capacity * 2);
+            }
+
+            struct spdk_thread *saved_thread = spdk_get_thread();
+            spdk_set_thread(global_thread);
+            zvfs_resize(file, new_capacity);
+            spdk_set_thread(saved_thread);
+        }
         size_t buffer_offset = file->offset % unit_size;
         size_t bytes = unit_size - buffer_offset;
 
@@ -445,6 +473,29 @@ static int zvfs_ensure_mounted(void)
 
     fs = new_fs;
     return 0;
+}
+
+zvfs_inode_t *zvfs_lookup_dir(const char *pathname, zvfs_t **out_fs)
+{
+    if (zvfs_ensure_mounted() != 0)
+    {
+        return NULL;
+    }
+
+    zvfs_inode_t *start = fs->root;
+    zvfs_inode_t *inode = zvfs_inode_lookup(fs, &start, pathname);
+    if (inode == NULL)
+    {
+        return NULL;
+    }
+    if (!S_ISDIR(inode->mode))
+    {
+        errno = ENOTDIR;
+        return NULL;
+    }
+
+    *out_fs = fs;
+    return inode;
 }
 
 int nmkdir(const char *pathname, mode_t mode)
@@ -955,3 +1006,5 @@ int nstatvfs(const char *pathname, struct statvfs *buf)
     };
     return 0;
 }
+
+

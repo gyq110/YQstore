@@ -220,25 +220,3 @@ zvfs_inode_t *zvfs_inode_lookup(zvfs_t *fs, zvfs_inode_t **start, const char *pa
 }
 
 
-zvfs_inode_t *zvfs_lookup_dir(const char *pathname, zvfs_t **out_fs)
-{
-    if (zvfs_ensure_mounted() != 0)
-    {
-        return NULL;
-    }
-
-    zvfs_inode_t *start = fs->root;
-    zvfs_inode_t *inode = zvfs_inode_lookup(fs, &start, pathname);
-    if (inode == NULL)
-    {
-        return NULL;
-    }
-    if (!S_ISDIR(inode->mode))
-    {
-        errno = ENOTDIR;
-        return NULL;
-    }
-
-    *out_fs = fs;
-    return inode;
-}

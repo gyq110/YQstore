@@ -57,6 +57,8 @@ struct zvfs_file_s
     off_t offset;
     int flags;
     zvfs_t *fs;
+    bool stream_eof;
+    bool stream_error;
     uint8_t *read_buffer;
     uint8_t *write_buffer;
     bool finished;
@@ -70,6 +72,4 @@ zvfs_inode_t *zvfs_inode_create(zvfs_t *fs, zvfs_inode_t *parent, const char *fi
 void zvfs_inode_table_load(zvfs_t *fs);
 void zvfs_inode_table_save(zvfs_t *fs);
 zvfs_inode_t *zvfs_inode_lookup(zvfs_t *fs, zvfs_inode_t **start, const char *pathname);
-zvfs_inode_t *zvfs_lookup_dir(const char *pathname, zvfs_t **out_fs);
-
 #endif

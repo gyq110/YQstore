@@ -557,8 +557,14 @@ FILE *fdopen(int fd, const char *mode)
 {
     if (fd >= 0 && fd < YQ_MAX_FD && file_table[fd] != NULL)
     {
-        errno = EOPNOTSUPP;
-        return NULL;
+        if (!is_inner(fd) || strcmp(mode, "r") != 0 ||
+                (file_table[fd]->flags & O_ACCMODE) == O_WRONLY)
+        {
+            errno = EINVAL;
+            return NULL;
+        }
+
+        return (FILE *)file_table[fd];
     }
 
     FILE *(*fdopen_f)(int, const char *) = dlsym(RTLD_NEXT, "fdopen");
@@ -610,8 +616,7 @@ int fsync(int fd)
 {
     if (fd >= 0 && fd < YQ_MAX_FD && file_table[fd] != NULL)
     {
-        errno = EOPNOTSUPP;
-        return -1;
+        return 0;
     }
 
     int (*fsync_f)(int) = dlsym(RTLD_NEXT, "fsync");
@@ -627,8 +632,7 @@ int fdatasync(int fd)
 {
     if (fd >= 0 && fd < YQ_MAX_FD && file_table[fd] != NULL)
     {
-        errno = EOPNOTSUPP;
-        return -1;
+        return 0;
     }
 
     int (*fdatasync_f)(int) = dlsym(RTLD_NEXT, "fdatasync");
@@ -641,6 +645,10 @@ int fdatasync(int fd)
 }
 int fcntl(int fd, int cmd, ...)
 {
+    if (is_inner(fd) && cmd == F_SETLK)
+    {
+        return 0;
+    }
     if (fd >= 0 && fd < YQ_MAX_FD && file_table[fd] != NULL &&
             cmd != F_GETFD && cmd != F_SETFD)
     {
@@ -702,4 +710,101 @@ int fcntl(int fd, int cmd, ...)
 
     va_end(args);
     return rc;
+}
+
+#undef fread_unlocked
+
+size_t fread_unlocked(void *buf, size_t size, size_t count, FILE *fp)
+{
+    for (int fd = 0; fd < YQ_MAX_FD; fd++)
+    {
+        zvfs_file_t *file = file_table[fd];
+        if (file == NULL || (void *)fp != (void *)file)
+            continue;
+
+        if (size == 0 || count == 0 || file->stream_eof)
+            return 0;
+
+        size_t bytes;
+        if (__builtin_mul_overflow(size, count, &bytes))
+        {
+            errno = EOVERFLOW;
+            file->stream_error = true;
+            return 0;
+        }
+
+        ssize_t n = 0;
+        if (file->offset < file->inode->size)
+            n = nread(fd, buf, bytes);
+
+        if (n < 0)
+        {
+            file->stream_error = true;
+            return 0;
+        }
+        if ((size_t)n < bytes)
+            file->stream_eof = true;
+
+        return (size_t)n / size;
+    }
+
+    size_t (*fread_f)(void *, size_t, size_t, FILE *) =
+        dlsym(RTLD_NEXT, "fread_unlocked");
+    return fread_f(buf, size, count, fp);
+}
+
+int feof(FILE *fp)
+{
+    for (int fd = 0; fd < YQ_MAX_FD; fd++)
+    {
+        zvfs_file_t *file = file_table[fd];
+        if (file != NULL && (void *)fp == (void *)file)
+            return file->stream_eof;
+    }
+
+    int (*feof_f)(FILE *) = dlsym(RTLD_NEXT, "feof");
+    return feof_f(fp);
+}
+
+int ferror(FILE *fp)
+{
+    for (int fd = 0; fd < YQ_MAX_FD; fd++)
+    {
+        zvfs_file_t *file = file_table[fd];
+        if (file != NULL && (void *)fp == (void *)file)
+            return file->stream_error;
+    }
+
+    int (*ferror_f)(FILE *) = dlsym(RTLD_NEXT, "ferror");
+    return ferror_f(fp);
+}
+
+void clearerr(FILE *fp)
+{
+    for (int fd = 0; fd < YQ_MAX_FD; fd++)
+    {
+        zvfs_file_t *file = file_table[fd];
+        if (file != NULL && (void *)fp == (void *)file)
+        {
+            file->stream_eof = false;
+            file->stream_error = false;
+            return;
+        }
+    }
+
+    void (*clearerr_f)(FILE *) = dlsym(RTLD_NEXT, "clearerr");
+    clearerr_f(fp);
+}
+
+int fclose(FILE *fp)
+{
+    for (int fd = 0; fd < YQ_MAX_FD; fd++)
+    {
+        zvfs_file_t *file = file_table[fd];
+        if (file != NULL && (void *)fp == (void *)file)
+            return nclose(fd);
+    }
+
+    int (*fclose_f)(FILE *) = dlsym(RTLD_NEXT, "fclose");
+    return fclose_f(fp);
 }

@@ -47,4 +47,6 @@ bool zvfs_reclaim_inode(zvfs_inode_t *inode);
 int nrmdir(const char *pathname);
 int nrename(const char *oldpath, const char *newpath);
 int nstatvfs(const char *pathname, struct statvfs *buf);
+zvfs_inode_t *zvfs_lookup_dir(const char *pathname, zvfs_t **out_fs);
+
 #endif
