@@ -971,6 +971,51 @@ fdfs_storaged /etc/fdfs/storage.conf stop && fdfs_trackerd /etc/fdfs/tracker.con
 ### 性能瓶颈分析
 
 
+#### 火焰图性能测试生成图
+![alt text](image-2.png)
+这里其实很明显了，我们的所有cpu几乎都在跑zvfs_write,但是我们在write里面几乎全部的cpu都被waiter里面的没有完成IO就循环poll的poll给占用了，说明我们的线程绝大部分都在等这个waiter的poll，我们这里的waiter是有问题的
+#### 改法
+1. 这里有俩种改法
+2. 第一种就是使用缓存，把每一次接收到的数据先缓存起来，然后攒够了一次性写入
+3. 异步回调，我们这里其实不是异步，因为我们的waiter是一直在等的，只有write完成这次回调，我们才会finish_true，这里我们可以直接让finish为true，然后处理下一批任务
+
+4. 这里首先最简单的，这里的缓存我就想到是不是我们的buffer不够大，所以这里我们把每次写入一个unit，buffersize也从512变成128kb，然后改了一下write和read的批量读和写
+
+#### 第一次修改之后的性能
+- zvfs
+```shell
+70000 70000 50
+root@gyq2:/tmp/bench# cat download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+100000 100000 73
+root@gyq2:/tmp/bench# cat download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+150000 150000 109
+root@gyq2:/tmp/bench# cat download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+200000 200000 141
+root@gyq2:/tmp/bench# cat download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+260000 260000 184
+root@gyq2:/tmp/bench# process 0, time used: 300s
+root@gyq2:/tmp/bench# cat download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+422437 422437 300
+root@gyq2:/tmp/bench# cat upload/stat_by_overall.0 
+#total_count success_count  time_used(s)
+6556 6556 15
+root@gyq2:/tmp/bench# 
+```
+这里可以看到，性能已经差不多了，虽然和内核比还是逊色
+
+|性能对比(ops/s)|upload|download|
+| --- | --- | --- |
+|linux|6556/9|549437/300|
+|zvfs|6556/15|422437/300|
+
+
+
+
 
 
 

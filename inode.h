@@ -60,7 +60,9 @@ struct zvfs_file_s
     bool stream_eof;
     bool stream_error;
     uint8_t *read_buffer;
+    size_t read_units;
     uint8_t *write_buffer;
+    size_t write_units;
     bool finished;
 };
 struct zvfs_file_s *yq_get_filefromfd(int fd);

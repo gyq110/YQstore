@@ -22,7 +22,7 @@
 #include<sys/stat.h>
 #include"inode.h"
 #include<sys/statvfs.h>
-#define BUFFER_SIZE 512
+#define BUFFER_SIZE (128U*1024U)
 extern struct spdk_thread *global_thread;
 
 

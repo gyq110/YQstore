@@ -1,6 +1,5 @@
 #include "zvfs.h"
 #include<endian.h>
-#define BUFFER_SIZE 512
 // nvme bdev blob blobstore channel
 #define DEBUG 0
 zvfs_t *fs = NULL; // 这里我们全局只使用一个fs，所以不需要管理，我们直接定义一个全局的就行
@@ -64,10 +63,13 @@ static void zvfs_spdk_blob_read_cb(void *cb_arg, int bserrno)
 static void zvfs_do_read(void *cb_arg)
 {
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
-    memset(file->read_buffer, 0, BUFFER_SIZE);
-    uint64_t io_offset = file->offset / file->fs->io_unit_size;
-
-    spdk_blob_io_read(file->blob, file->fs->channel, file->read_buffer, io_offset, 1, zvfs_spdk_blob_read_cb, file);
+    size_t unit_size = file->fs->io_unit_size;
+    uint64_t io_offset = file->offset / unit_size;
+    memset(file->read_buffer, 0, file->read_units * unit_size);
+    spdk_blob_io_read(file->blob, file->fs->channel, file->read_buffer, io_offset, file->read_units, zvfs_spdk_blob_read_cb, file);
+#if 0
+    file->finished = true;
+#endif
 }
 
 static void zvfs_spdk_blob_write_cb(void *cb_arg, int bserrno)
@@ -88,7 +90,10 @@ static void zvfs_do_write(void *cb_arg)
 
     uint64_t io_offset = file->offset / file->fs->io_unit_size;
 
-    spdk_blob_io_write(file->blob, file->fs->channel, file->write_buffer, io_offset, 1, zvfs_spdk_blob_write_cb, file);
+    spdk_blob_io_write(file->blob, file->fs->channel, file->write_buffer, io_offset, file->write_units, zvfs_spdk_blob_write_cb, file);
+#if 0
+    file->finished = true;
+#endif
 }
 
 static void zvfs_spdk_bs_open_blob_cb(void *cb_arg, struct spdk_blob *blb, int bserrno)
@@ -284,13 +289,15 @@ static int zvfs_read(zvfs_file_t *file, uint8_t *buffer, size_t count)
     while (copied < count)
     {
         size_t buffer_offset = file->offset % unit_size;
-        size_t bytes = unit_size - buffer_offset;
+        size_t bytes = count - copied;
+        size_t max_bytes = (BUFFER_SIZE / unit_size) * unit_size - buffer_offset;
 
-        if (bytes > count - copied)
+        if (bytes > max_bytes)
         {
-            bytes = count - copied;
+            bytes = max_bytes;
         }
 
+        file->read_units = (buffer_offset + bytes + unit_size - 1) / unit_size;
         file->finished = false;
         waiter(global_thread, zvfs_do_read, file, &file->finished);
 
@@ -319,7 +326,7 @@ static int zvfs_write(zvfs_file_t *file, const uint8_t *buffer, size_t count)
         }
 
         off_t end;
-        if (__builtin_add_overflow(file->offset, count, &end))
+        if (__builtin_add_overflow(file->offset, count - written, &end))
         {
             errno = EFBIG;
             return -1;
@@ -342,33 +349,34 @@ static int zvfs_write(zvfs_file_t *file, const uint8_t *buffer, size_t count)
             spdk_set_thread(saved_thread);
         }
         size_t buffer_offset = file->offset % unit_size;
-        size_t bytes = unit_size - buffer_offset;
+        size_t bytes = count - written;
 
-        if (bytes > count - written)
+        if (buffer_offset == 0 && bytes >= unit_size)
         {
-            bytes = count - written;
+            if (bytes > BUFFER_SIZE)
+            {
+                bytes = BUFFER_SIZE;
+            }
+            bytes -= bytes % unit_size;
         }
-
-        /* 部分覆盖，先保留该单元的原数据。 */
-        if (buffer_offset != 0 || bytes != unit_size)
+        else
         {
+            size_t available = unit_size - buffer_offset;
+            if (bytes > available)
+            {
+                bytes = available;
+            }
+            file->read_units = 1;
             file->finished = false;
-            waiter(global_thread, zvfs_do_read,
-                   file, &file->finished);
-
-            memcpy(file->write_buffer,
-                   file->read_buffer,
-                   unit_size);
+            waiter(global_thread, zvfs_do_read, file, &file->finished);
+            memcpy(file->write_buffer, file->read_buffer, unit_size);
         }
 
-        /* 覆盖本次要修改的部分。 */
-        memcpy(file->write_buffer + buffer_offset,
-               buffer + written,
-               bytes);
+        memcpy(file->write_buffer + buffer_offset, buffer + written, bytes);
 
+        file->write_units = bytes < unit_size ? 1 : bytes / unit_size;
         file->finished = false;
-        waiter(global_thread, zvfs_do_write,
-               file, &file->finished);
+        waiter(global_thread, zvfs_do_write, file, &file->finished);
 
         file->offset += bytes;
         if (file->offset > file->inode->size)
@@ -603,7 +611,7 @@ int nopen(const char *pathname, int flags)
     file->flags = flags;
 //这里mount就完了，我们需要改一我们的zvfs_open,如果我们的文件是之前就有的，那我们需要通过blobid找到blob，而不是每次都创建一个blob
     int fd = yq_get_fd_fromlinux();
-    size_t size = fs->io_unit_size;
+    size_t size = BUFFER_SIZE;
     file->read_buffer = spdk_malloc(size, 0x1000, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
     file->write_buffer = spdk_malloc(size, 0x1000, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
     zvfs_open(file);
