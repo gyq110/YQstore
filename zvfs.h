@@ -21,8 +21,7 @@
 #include <unistd.h>
 #include<sys/stat.h>
 #include"inode.h"
-
-#define ENABLE_ROCKDB 1
+#include<sys/statvfs.h>
 #define BUFFER_SIZE 512
 extern struct spdk_thread *global_thread;
 

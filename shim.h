@@ -44,4 +44,6 @@ int feof(FILE *fp);
 int ferror(FILE *fp);
 void clearerr(FILE *fp);
 int fclose(FILE *fp);
+int chdir(const char *path);
+int statvfs64(const char *path, struct statvfs64 *buf);
 #endif

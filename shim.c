@@ -1,5 +1,6 @@
 
 #include "shim.h"
+#include <limits.h>
 #include <sys/statvfs.h>
 // 这里有一个问题，就是我们的fd如果不是我们自己在内部通过eventfd创建的，但是依旧调用了这些接口，那我们这里应该首先调用一个检查
 
@@ -9,32 +10,59 @@ static int is_inner(int fd)
 }
 
 
-static const char *zvfs_inner_path(const char *pathname)
+static char zvfs_cwd[PATH_MAX];//这个进程里面当前的目录
+
+static int zvfs_inner_path(const char *path, char resolved[PATH_MAX],
+                           const char **inner_path)
 {
-    const size_t prefix_len = sizeof(YQ_MOUNT_PREFIX) - 1;
+    *inner_path = NULL;
 
-    if (strncmp(pathname, YQ_MOUNT_PREFIX, prefix_len) != 0)
+    if (path[0] == '/')
     {
-        return NULL;
+        //这里说明是绝对路径，需要判断一下是不是有zvfs/来分流
+        const size_t prefix_len = sizeof(YQ_MOUNT_PREFIX) - 1;
+
+        if (strncmp(path, YQ_MOUNT_PREFIX, prefix_len) == 0)
+        {
+            const char *suffix = path + prefix_len;
+
+            if (*suffix == '\0')
+                *inner_path = YQ_SPDK_ROOT_DIR;
+            else if (*suffix == '/')
+                *inner_path = suffix;
+        }
+        return 0;
+    }
+//下面就全是相对路径的处理
+    if (zvfs_cwd[0] == '\0')//这里如果没有cwd说明我们这个是linux内部的
+        return 0;
+
+    if (path[0] == '\0')
+    {
+        //判断传过来的数据不是空字符串
+        errno = ENOENT;
+        return -1;
+    }
+    const char *base = strcmp(zvfs_cwd, "/") == 0 ? "" : zvfs_cwd;
+    int len = snprintf(resolved, PATH_MAX, "%s/%s", base, path);
+    if (len < 0 || len >= PATH_MAX)
+    {
+        errno = ENAMETOOLONG;
+        return -1;
     }
 
-    const char *suffix = pathname + prefix_len;
-    if (*suffix == '\0')
-    {
-        return YQ_SPDK_ROOT_DIR;
-    }
-    if (*suffix == '/')
-    {
-        return suffix;
-    }
-    return NULL;
+    *inner_path = resolved;
+    return 0;
 }
 
 
 int open(const char *pathname, int flags, ...)
 {
     static int (*open_f)(const char *, int, ...);
-    const char *inner_path = zvfs_inner_path(pathname);
+    char resolved[PATH_MAX];
+    const char *inner_path;
+    if (zvfs_inner_path(pathname, resolved, &inner_path) < 0)
+        return -1;
     if (inner_path != NULL)
     {
         return nopen(inner_path, flags);
@@ -134,7 +162,10 @@ int stat64(const char *pathname, struct stat64 *st)
 {
     static int (*stat_f)(const char *, struct stat64 *);
 
-    const char *inner_path = zvfs_inner_path(pathname);
+    char resolved[PATH_MAX];
+    const char *inner_path;
+    if (zvfs_inner_path(pathname, resolved, &inner_path) < 0)
+        return -1;
     if (inner_path != NULL)
     {
         return nstat(inner_path, st);
@@ -181,7 +212,10 @@ ssize_t pwrite64(int fd, const void *buf, size_t count, off64_t offset)
 }
 int mkdir(const char *pathname, mode_t mode)
 {
-    const char *inner_path = zvfs_inner_path(pathname);
+    char resolved[PATH_MAX];
+    const char *inner_path;
+    if (zvfs_inner_path(pathname, resolved, &inner_path) < 0)
+        return -1;
     if (inner_path != NULL)
     {
         return nmkdir(inner_path, mode);
@@ -205,7 +239,10 @@ DIR *opendir(const char *pathname)
         return NULL;
     }
 
-    const char *inner_path = zvfs_inner_path(pathname);
+    char resolved[PATH_MAX];
+    const char *inner_path;
+    if (zvfs_inner_path(pathname, resolved, &inner_path) < 0)
+        return NULL;
     if (inner_path == NULL)
     {
         return opendir_f(pathname);
@@ -310,7 +347,10 @@ int closedir(DIR *dirp)
 }
 int stat(const char *pathname, struct stat *st)
 {
-    const char *inner_path = zvfs_inner_path(pathname);
+    char resolved[PATH_MAX];
+    const char *inner_path;
+    if (zvfs_inner_path(pathname, resolved, &inner_path) < 0)
+        return -1;
     if (inner_path == NULL)
     {
         int (*stat_f)(const char *, struct stat *) = dlsym(RTLD_NEXT, "stat");
@@ -366,7 +406,10 @@ int fstat(int fd, struct stat *st)
 }
 int access(const char *pathname, int mode)
 {
-    const char *inner_path = zvfs_inner_path(pathname);
+    char resolved[PATH_MAX];
+    const char *inner_path;
+    if (zvfs_inner_path(pathname, resolved, &inner_path) < 0)
+        return -1;
     if (inner_path != NULL)
     {
         if (mode != F_OK)
@@ -481,8 +524,11 @@ int ftruncate(int fd, off_t length)
 }
 int unlink(const char *pathname)
 {
-    const char *inner_path = zvfs_inner_path(pathname);
-    if (zvfs_inner_path(pathname) != NULL)
+    char resolved[PATH_MAX];
+    const char *inner_path;
+    if (zvfs_inner_path(pathname, resolved, &inner_path) < 0)
+        return -1;
+    if (inner_path != NULL)
     {
         return nunlink(inner_path);
     }
@@ -497,7 +543,10 @@ int unlink(const char *pathname)
 }
 int rmdir(const char *pathname)
 {
-    const char *inner_path = zvfs_inner_path(pathname);
+    char resolved[PATH_MAX];
+    const char *inner_path;
+    if (zvfs_inner_path(pathname, resolved, &inner_path) < 0)
+        return -1;
     if (inner_path != NULL)
     {
         return nrmdir(inner_path);
@@ -514,9 +563,14 @@ int rmdir(const char *pathname)
 
 int rename(const char *oldpath, const char *newpath)
 {
-    const char *old_inner = zvfs_inner_path(oldpath);
-    const char *new_inner = zvfs_inner_path(newpath);
-
+    char resolved[PATH_MAX];
+    const char *old_inner;
+    if (zvfs_inner_path(oldpath, resolved, &old_inner) < 0)
+        return -1;
+    char resolved1[PATH_MAX];
+    const char *new_inner;
+    if (zvfs_inner_path(newpath, resolved1, &new_inner) < 0)
+        return -1;
     if ((old_inner == NULL) != (new_inner == NULL))
     {
         errno = EXDEV;
@@ -538,7 +592,10 @@ int rename(const char *oldpath, const char *newpath)
 
 int statvfs(const char *pathname, struct statvfs *buf)
 {
-    const char *inner_path = zvfs_inner_path(pathname);
+    char resolved[PATH_MAX];
+    const char *inner_path;
+    if (zvfs_inner_path(pathname, resolved, &inner_path) < 0)
+        return -1;
     if (inner_path != NULL)
     {
         return nstatvfs(inner_path, buf);
@@ -807,4 +864,90 @@ int fclose(FILE *fp)
 
     int (*fclose_f)(FILE *) = dlsym(RTLD_NEXT, "fclose");
     return fclose_f(fp);
+}
+int chdir(const char *path)
+{
+    //这里是给我的cwd赋值
+    char resolved[PATH_MAX];
+    const char *inner_path;
+
+    if (zvfs_inner_path(path, resolved, &inner_path) < 0)
+        return -1;
+
+    if (inner_path == NULL)
+    {
+        //这里走libc
+        int (*chdir_f)(const char *) = dlsym(RTLD_NEXT, "chdir");
+        if (chdir_f == NULL)
+        {
+            errno = ENOSYS;
+            return -1;
+        }
+
+        int rc = chdir_f(path);
+        if (rc == 0)
+            zvfs_cwd[0] = '\0';
+        return rc;
+    }
+//这里走我们的zvfs
+//首先需要判断这个路径是不是文件夹
+    zvfs_t *dir_fs;
+    zvfs_inode_t *dir = zvfs_lookup_dir(inner_path, &dir_fs);
+    if (dir == NULL)
+        return -1;
+//reslve存的是我们的完整的路径，这里先给最后路径复制为0
+    char *cwd = resolved + sizeof(resolved) - 1;
+    *cwd = '\0';
+
+    while (dir != dir_fs->root)
+    {
+        size_t len = strlen(dir->filename);
+        if ((size_t)(cwd - resolved) < len + 1)
+        {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+
+        cwd -= len;
+        memcpy(cwd, dir->filename, len);
+        *--cwd = '/';
+        dir = dir_fs->inode_table[dir->parent_ino];
+    }
+
+    strcpy(zvfs_cwd, *cwd == '\0' ? YQ_SPDK_ROOT_DIR : cwd);
+    return 0;
+}
+int statvfs64(const char *path, struct statvfs64 *buf)
+{
+    char resolved[PATH_MAX];
+    const char *inner_path;
+    if (zvfs_inner_path(path, resolved, &inner_path) < 0)
+        return -1;
+    if (inner_path != NULL)
+    {
+        struct statvfs info;
+        if (nstatvfs(inner_path, &info) != 0)
+            return -1;
+//这里和statvfs不一样的就是把结构体转换一下就行了
+        *buf = (struct statvfs64)
+        {
+            .f_bsize   = info.f_bsize,
+            .f_frsize  = info.f_frsize,
+            .f_blocks  = info.f_blocks,
+            .f_bfree   = info.f_bfree,
+            .f_bavail  = info.f_bavail,
+            .f_namemax = info.f_namemax,
+        };
+        return 0;
+    }
+
+    int (*statvfs_f)(const char *, struct statvfs64 *) =
+        dlsym(RTLD_NEXT, "statvfs64");
+    if (statvfs_f == NULL)
+    {
+        errno = ENOSYS;
+        return -1;
+    }
+    return statvfs_f(path, buf);
+
 }

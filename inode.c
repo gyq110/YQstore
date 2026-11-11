@@ -103,6 +103,9 @@ void zvfs_inode_table_save(zvfs_t *fs)
             record += sizeof(*inode);
         }
     }
+    struct spdk_thread *saved_thread = spdk_get_thread();
+    spdk_set_thread(global_thread);
+
     if (clusters > spdk_blob_get_num_clusters(fs->inode_table_blob))
     {
         spdk_blob_resize(fs->inode_table_blob, clusters, zvfs_inode_io_done, &done);
@@ -110,8 +113,12 @@ void zvfs_inode_table_save(zvfs_t *fs)
         spdk_blob_sync_md(fs->inode_table_blob, zvfs_inode_io_done, &done);
         zvfs_inode_io_wait(&done);
     }
-    spdk_blob_io_write(fs->inode_table_blob, fs->channel, buffer, 0, units, zvfs_inode_io_done, &done);
+
+    spdk_blob_io_write(fs->inode_table_blob, fs->channel, buffer, 0,
+                       units, zvfs_inode_io_done, &done);
     zvfs_inode_io_wait(&done);
+
+    spdk_set_thread(saved_thread);
     spdk_free(buffer);
 }
 void zvfs_inode_table_load(zvfs_t *fs)

@@ -54,7 +54,7 @@
 2. 用fio可以测试spdk的性能
 3. 编译成一个动态库.so
 4. 把rockdb，用ld跑
-5. 把postgreensql跑到上面
+5. 把postgresql跑到上面
 6. fastdfs跑到上面
 
 
@@ -506,8 +506,7 @@ LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so /home/gyq2/src/rocksdb/db_b
 
 - 随机读操作
 ```shell
-LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so /home/gyq2/src/rocksdb/db_bench --db=/zvfs/rocksdb-bench --benchmarks=readrandom --use_existing_db=1 
-  --num=100000 --duration=30 --threads=1 --compression_type=none --histogram=1
+LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so /home/gyq2/src/rocksdb/db_bench --db=/zvfs/rocksdb-bench --benchmarks=readrandom --use_existing_db=1   --num=100000 --duration=30 --threads=1 --compression_type=none --histogram=1
 ```
 3. 指令解析
 - LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so 这个是要链接的库
@@ -521,10 +520,462 @@ LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so /home/gyq2/src/rocksdb/db_b
 
 
 #### 运行结果以及性能分析
+1. linux
+- fillseq flush
+```shell
+
+root@gyq2:/home/gyq2/spdk/examples/zvfs# LD_PRELOAD= /home/gyq2/src/rocksdb/db_bench   --db=/tmp/rocksdb-bench --benchmarks=fillseq,flush   --num=100000 --threads=1 --compression_type=none --histogram=1 --sync=1
+Set seed to 1794221214633358 because --seed was 0
+Initializing RocksDB Options from the specified file
+Initializing RocksDB Options from command-line flags
+Integrated BlobDB: blob cache disabled
+RocksDB:    version 10.10.1
+Date:       Mon Nov  9 10:46:54 2026
+CPU:        8 * AMD Ryzen 9 8945HX with Radeon Graphics
+CPUCache:   1024 KB
+Keys:       16 bytes each (+ 0 bytes user-defined timestamp)
+Values:     100 bytes each (50 bytes after compression)
+Entries:    100000
+Prefix:    0 bytes
+Keys per prefix:    0
+RawSize:    11.1 MB (estimated)
+FileSize:   6.3 MB (estimated)
+Write rate: 0 bytes/second
+Read rate: 0 ops/second
+Compression: NoCompression
+Compression sampling rate: 0
+Memtablerep: SkipListFactory
+Perf Level: 1
+------------------------------------------------
+Initializing RocksDB Options from the specified file
+Initializing RocksDB Options from command-line flags
+Integrated BlobDB: blob cache disabled
+DB path: [/tmp/rocksdb-bench]
+fillseq      :     882.289 micros/op 1133 ops/sec 88.229 seconds 100000 operations;    0.1 MB/s
+Microseconds per write:
+Count: 100000 Average: 882.2929  StdDev: 212.33
+Min: 483  Median: 825.6344  Max: 20505
+Percentiles: P50: 825.63 P75: 1059.38 P99: 1768.76 P99.9: 1893.62 P99.99: 3050.00
+------------------------------------------------------
+(     380,     580 ]     1444   1.444%   1.444% 
+(     580,     870 ]    57326  57.326%  58.770% ###########
+(     870,    1300 ]    36851  36.851%  95.621% #######
+(    1300,    1900 ]     4325   4.325%  99.946% #
+(    1900,    2900 ]       43   0.043%  99.989% 
+(    2900,    4400 ]       10   0.010%  99.999% 
+(   14000,   22000 ]        1   0.001% 100.000% 
+
+flush memtable
+root@gyq2:/home/gyq2/spdk/examples/zvfs# 
+
+
+```
+- readrandom
+```shell
+
+(    2900,    4400 ]       10   0.010%  99.999% 
+(   14000,   22000 ]        1   0.001% 100.000% 
+
+flush memtable
+root@gyq2:/home/gyq2/spdk/examples/zvfs# LD_PRELOAD= /home/gyq2/src/rocksdb/db_bench --db=/tmp/rocksdb-bench --benchmarks=readrandom --use_existing_db=1 --num=100000 --duration=30 --threads=1 --compression_type=none --histogram=1
+Set seed to 1794221337727283 because --seed was 0
+Initializing RocksDB Options from the specified file
+Initializing RocksDB Options from command-line flags
+Integrated BlobDB: blob cache disabled
+RocksDB:    version 10.10.1
+Date:       Mon Nov  9 10:48:57 2026
+CPU:        8 * AMD Ryzen 9 8945HX with Radeon Graphics
+CPUCache:   1024 KB
+Keys:       16 bytes each (+ 0 bytes user-defined timestamp)
+Values:     100 bytes each (50 bytes after compression)
+Entries:    100000
+Prefix:    0 bytes
+Keys per prefix:    0
+RawSize:    11.1 MB (estimated)
+FileSize:   6.3 MB (estimated)
+Write rate: 0 bytes/second
+Read rate: 0 ops/second
+Compression: NoCompression
+Compression sampling rate: 0
+Memtablerep: SkipListFactory
+Perf Level: 1
+------------------------------------------------
+DB path: [/tmp/rocksdb-bench]
+readrandom   :       1.032 micros/op 968816 ops/sec 30.001 seconds 29064999 operations;  107.2 MB/s (29064999 of 29064999 found)
+
+Microseconds per read:
+Count: 29064999 Average: 1.0322  StdDev: 1.65
+Min: 0  Median: 0.5393  Max: 958
+Percentiles: P50: 0.54 P75: 0.81 P99: 1.97 P99.9: 5.99 P99.99: 91.94
+------------------------------------------------------
+[       0,       1 ] 26947805  92.716%  92.716% ###################
+(       1,       2 ]  1882496   6.477%  99.193% #
+(       2,       3 ]   136274   0.469%  99.661% 
+(       3,       4 ]    52872   0.182%  99.843% 
+(       4,       6 ]    16592   0.057%  99.900% 
+(       6,      10 ]     3723   0.013%  99.913% 
+(      10,      15 ]     1390   0.005%  99.918% 
+(      15,      22 ]    12285   0.042%  99.960% 
+(      22,      34 ]     1936   0.007%  99.967% 
+(      34,      51 ]     1119   0.004%  99.971% 
+(      51,      76 ]     3685   0.013%  99.983% 
+(      76,     110 ]     4087   0.014%  99.997% 
+(     110,     170 ]      562   0.002%  99.999% 
+(     170,     250 ]      141   0.000% 100.000% 
+(     250,     380 ]       24   0.000% 100.000% 
+(     380,     580 ]        6   0.000% 100.000% 
+(     580,     870 ]        1   0.000% 100.000% 
+(     870,    1300 ]        1   0.000% 100.000% 
+
+root@gyq2:/home/gyq2/spdk/examples/zvfs# 
+```
+2. zvfs
+- fillseq flush
+```shell
+
+root@gyq2:/home/gyq2/spdk/examples/zvfs# LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so /home/gyq2/src/rocksdb/db_bench   --db=/zvfs/rocksdb-bench --benchmarks=fillseq,flush   --num=100000 --threads=1 --compression_type=none --histogram=1 --sync=1
+Set seed to 1794221399811272 because --seed was 0
+[2026-11-09 10:50:01.726296] nvme_qpair.c: 310:spdk_nvme_qpair_print_command: *NOTICE*: [0000:03:00.0,cntlid:0,qid:0,qpair:0x2000160fbea0,ENABLED] IDENTIFY (06) qid:0 cid:191 nsid:0 cdw10:00000006 cdw11:00000000 PRP1 0x1dda1d000 PRP2 0x0
+[2026-11-09 10:50:01.730435] nvme_qpair.c: 543:spdk_nvme_qpair_print_completion_ext: *NOTICE*: [0000:03:00.0,cntlid:0,qid:0,qpair:0x2000160fbea0,ENABLED] INVALID FIELD (00/02) qid:0 cid:191 cdw0:00000000 sqhd:0007 p:1 m:0 dnr:0
+[2026-11-09 10:50:01.752584] blobstore.c:4986:bs_recover: *NOTICE*: Performing recovery on blobstore
+[2026-11-09 10:50:01.752856] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0x0
+[2026-11-09 10:50:01.753257] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0x2
+[2026-11-09 10:50:01.753582] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0x4
+Initializing RocksDB Options from the specified file
+Initializing RocksDB Options from command-line flags
+Integrated BlobDB: blob cache disabled
+RocksDB:    version 10.10.1
+Date:       Mon Nov  9 10:50:03 2026
+CPU:        8 * AMD Ryzen 9 8945HX with Radeon Graphics
+CPUCache:   1024 KB
+Keys:       16 bytes each (+ 0 bytes user-defined timestamp)
+Values:     100 bytes each (50 bytes after compression)
+Entries:    100000
+Prefix:    0 bytes
+Keys per prefix:    0
+RawSize:    11.1 MB (estimated)
+FileSize:   6.3 MB (estimated)
+Write rate: 0 bytes/second
+Read rate: 0 ops/second
+Compression: NoCompression
+Compression sampling rate: 0
+Memtablerep: SkipListFactory
+Perf Level: 1
+------------------------------------------------
+Initializing RocksDB Options from the specified file
+Initializing RocksDB Options from command-line flags
+Integrated BlobDB: blob cache disabled
+DB path: [/zvfs/rocksdb-bench]
+fillseq      :     218.325 micros/op 4580 ops/sec 21.833 seconds 100000 operations;    0.5 MB/s
+Microseconds per write:
+Count: 100000 Average: 218.3271  StdDev: 110.83
+Min: 89  Median: 167.7207  Max: 4831
+Percentiles: P50: 167.72 P75: 289.19 P99: 656.37 P99.9: 1108.58 P99.99: 1900.00
+------------------------------------------------------
+(      76,     110 ]      567   0.567%   0.567% 
+(     110,     170 ]    51385  51.385%  51.952% ##########
+(     170,     250 ]    15243  15.243%  67.195% ###
+(     250,     380 ]    25888  25.888%  93.083% #####
+(     380,     580 ]     5626   5.626%  98.709% #
+(     580,     870 ]     1105   1.105%  99.814% 
+(     870,    1300 ]      155   0.155%  99.969% 
+(    1300,    1900 ]       21   0.021%  99.990% 
+(    1900,    2900 ]        7   0.007%  99.997% 
+(    2900,    4400 ]        2   0.002%  99.999% 
+(    4400,    6600 ]        1   0.001% 100.000% 
+
+flush memtable
+root@gyq2:/home/gyq2/spdk/examples/zvfs# 
+
+
+```
+- readrandom
+```shell
+
+root@gyq2:/home/gyq2/spdk/examples/zvfs# LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so /home/gyq2/src/rocksdb/db_bench --db=/zvfs/rocksdb-bench --benchmarks=readrandom --use_existing_db=1   --num=100000 --duration=30 --threads=1 --compression_type=none --histogram=1
+Set seed to 1794221521148633 because --seed was 0
+[2026-11-09 10:52:01.394863] nvme_qpair.c: 310:spdk_nvme_qpair_print_command: *NOTICE*: [0000:03:00.0,cntlid:0,qid:0,qpair:0x2000160fbea0,ENABLED] IDENTIFY (06) qid:0 cid:191 nsid:0 cdw10:00000006 cdw11:00000000 PRP1 0x1dda1d000 PRP2 0x0
+[2026-11-09 10:52:01.395007] nvme_qpair.c: 543:spdk_nvme_qpair_print_completion_ext: *NOTICE*: [0000:03:00.0,cntlid:0,qid:0,qpair:0x2000160fbea0,ENABLED] INVALID FIELD (00/02) qid:0 cid:191 cdw0:00000000 sqhd:0007 p:1 m:0 dnr:0
+[2026-11-09 10:52:01.415180] blobstore.c:4986:bs_recover: *NOTICE*: Performing recovery on blobstore
+[2026-11-09 10:52:01.415564] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0x0
+[2026-11-09 10:52:01.415926] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0x2
+[2026-11-09 10:52:01.416209] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0x4
+[2026-11-09 10:52:01.416478] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0x6
+[2026-11-09 10:52:01.416800] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0x8
+[2026-11-09 10:52:01.417034] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0xa
+[2026-11-09 10:52:01.417343] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0xc
+[2026-11-09 10:52:01.417563] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0xe
+[2026-11-09 10:52:01.417985] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0x12
+[2026-11-09 10:52:01.418285] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0x14
+[2026-11-09 10:52:01.418648] blobstore.c:4933:bs_load_replay_md_cpl: *NOTICE*: Recover: blob 0x16
+Initializing RocksDB Options from the specified file
+Initializing RocksDB Options from command-line flags
+Integrated BlobDB: blob cache disabled
+RocksDB:    version 10.10.1
+Date:       Mon Nov  9 10:52:03 2026
+CPU:        8 * AMD Ryzen 9 8945HX with Radeon Graphics
+CPUCache:   1024 KB
+Keys:       16 bytes each (+ 0 bytes user-defined timestamp)
+Values:     100 bytes each (50 bytes after compression)
+Entries:    100000
+Prefix:    0 bytes
+Keys per prefix:    0
+RawSize:    11.1 MB (estimated)
+FileSize:   6.3 MB (estimated)
+Write rate: 0 bytes/second
+Read rate: 0 ops/second
+Compression: NoCompression
+Compression sampling rate: 0
+Memtablerep: SkipListFactory
+Perf Level: 1
+------------------------------------------------
+DB path: [/zvfs/rocksdb-bench]
+readrandom   :       1.111 micros/op 900354 ops/sec 30.000 seconds 27010999 operations;   99.6 MB/s (27010999 of 27010999 found)
+
+Microseconds per read:
+Count: 27010999 Average: 1.1107  StdDev: 8.53
+Min: 0  Median: 0.5394  Max: 16469
+Percentiles: P50: 0.54 P75: 0.81 P99: 1.98 P99.9: 8.18 P99.99: 466.05
+------------------------------------------------------
+[       0,       1 ] 25037945  92.695%  92.695% ###################
+(       1,       2 ]  1742515   6.451%  99.146% #
+(       2,       3 ]   132795   0.492%  99.638% 
+(       3,       4 ]    53589   0.198%  99.837% 
+(       4,       6 ]    16397   0.061%  99.897% 
+(       6,      10 ]     1368   0.005%  99.902% 
+(      10,      15 ]     1290   0.005%  99.907% 
+(      15,      22 ]    10941   0.041%  99.948% 
+(      22,      34 ]     2047   0.008%  99.955% 
+(      34,      51 ]     1290   0.005%  99.960% 
+(      51,      76 ]     3523   0.013%  99.973% 
+(      76,     110 ]     3592   0.013%  99.986% 
+(     110,     170 ]      500   0.002%  99.988% 
+(     170,     250 ]      131   0.000%  99.989% 
+(     250,     380 ]       35   0.000%  99.989% 
+(     380,     580 ]      790   0.003%  99.992% 
+(     580,     870 ]     1803   0.007%  99.998% 
+(     870,    1300 ]      391   0.001% 100.000% 
+(    1300,    1900 ]       52   0.000% 100.000% 
+(    1900,    2900 ]        4   0.000% 100.000% 
+(   14000,   22000 ]        1   0.000% 100.000% 
+
+root@gyq2:/home/gyq2/spdk/examples/zvfs# 
+```
+
+
+
+
+
+
 
 
 
 #### 清理磁盘的指令
+
+
+
+# postgresql
+
+## 首先依旧了解一下这个是啥
+postgresql是一个存储中间件，和mysql差不多，是一个自己运行的进程，然后我们通过自己的程序连接发送sql语句来操作这个数据库，我们使用zvfs来承接存储功能，使用psbench连接来测试性能
+
+# FastDFS
+
+## 首先了解一下这个fastdfs是啥
+这个fastdfs是在文件系统之上跑的一个独立的文件传输系统，是一个独立的进程，所以我们想要跑的话就需要让fastdfs跑在我们的zvfs和linux上的ext4，里面然后我们需要再跑一个bench去给我们的这个fastdfs上传和下载文件，然后输出传输性能
+
+
+## 实现步骤
+
+1. 这里就实现了俩个接口statvfs64，chdir
+2. 然后就是测试了
+
+## 性能测试
+### 总体步骤
+1. 配置conf
+2. 使用zvfs或者linux跑fastdfs
+3. 启动bench测试性能
+4. 关闭fastdfs
+5. zvfs使用我们自己写的程序清楚所有blobstore里面的数据，linux使用rm删除就行了，便于下一次测试
+
+
+
+
+
+### 性能展示
+
+1. zvfs
+- 测试linux首先把我们的/etc/fdfs/storage.conf 里面的store_path0改成/zvfs/
+
+- 启动fastdfs
+```shell
+mkdir -p /tmp/fastdfs && fdfs_trackerd /etc/fdfs/tracker.conf start &&
+LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so fdfs_storaged /etc/fdfs/storage.conf start
+```
+- 启动bench测试upload
+```shell
+mkdir -p /tmp/bench && cd /tmp/bench &&
+/home/gyq2/src/fastdfs/test/gen_files &&
+/home/gyq2/src/fastdfs/test/test_upload 0 /etc/fdfs/client.conf
+```
+- 展示upload的性能
+```shell
+root@gyq2:/tmp/bench/download# mkdir -p /tmp/bench && cd /tmp/bench &&
+/home/gyq2/src/fastdfs/test/gen_files &&
+/home/gyq2/src/fastdfs/test/test_upload 0 /etc/fdfs/client.conf
+done.
+root@gyq2:/tmp/bench# process 0, time used: 81s
+
+root@gyq2:/tmp/bench# cd upload/
+root@gyq2:/tmp/bench/upload# cat stat_by_overall.0 
+#total_count success_count  time_used(s)
+6556 6556 81
+root@gyq2:/tmp/bench/upload# cat stat_by_file_type.0 
+#file_type total_count success_count time_used(ms)
+5K 5000 5000 12476
+50K 1000 1000 10287
+200K 500 500 18480
+1M 50 50 9100
+10M 5 5 9086
+100M 1 1 18304
+root@gyq2:/tmp/bench/upload# 
+```
+- 运行download的指令
+```shell
+/home/gyq2/src/fastdfs/test/test_download 0 /etc/fdfs/client.conf
+```
+- 展示download的性能
+```shell
+root@gyq2:/tmp/bench/upload# cd ..
+root@gyq2:/tmp/bench# /home/gyq2/src/fastdfs/test/test_download 0 /etc/fdfs/client.conf
+root@gyq2:/tmp/bench# cat ./download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+20000 20000 118
+root@gyq2:/tmp/bench# cat ./download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+30000 30000 178
+root@gyq2:/tmp/bench# cat ./download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+40000 40000 235
+root@gyq2:/tmp/bench# cat ./download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+40000 40000 235
+root@gyq2:/tmp/bench# process 0, time used: 300s
+
+root@gyq2:/tmp/bench# cat ./download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+50713 50713 300
+root@gyq2:/tmp/bench# cat ./download/stat_by_file_type.0 
+#file_type total_count success_count time_used(ms)
+5K 38980 38980 38527
+50K 7368 7368 58318
+200K 3988 3988 125076
+1M 377 377 60185
+10M 0 0 0
+100M 0 0 0
+root@gyq2:/tmp/bench# 
+```
+- 使用我们的程序删除zvfs里面的blobstore里面除了根目录以外的全blob
+```shell
+cd /home/gyq2/spdk/examples/zvfs&&LD_PRELOAD=./libstore.so ./clear_all_inode
+```
+- 关闭我们的fastdfs
+```shell
+fdfs_storaged /etc/fdfs/storage.conf stop && fdfs_trackerd /etc/fdfs/tracker.conf stop
+```
+
+
+
+2. linux
+- 测试linux首先把我们的/etc/fdfs/storage.conf 里面的store_path0改成/tmp/
+- 启动fastdfs的指令
+```shell
+mkdir -p /tmp/fastdfs && fdfs_trackerd /etc/fdfs/tracker.conf start &&fdfs_storaged /etc/fdfs/storage.conf start
+```
+- 开启bench测试upload上传的指令
+```shell
+mkdir -p /tmp/bench && cd /tmp/bench &&
+/home/gyq2/src/fastdfs/test/gen_files &&
+/home/gyq2/src/fastdfs/test/test_upload 0 /etc/fdfs/client.conf
+```
+
+- 上传的性能展示
+```shell
+root@gyq2:/tmp/bench# cat ./upload/stat_by_overall.0 
+#total_count success_count  time_used(s)
+6556 6556 9
+root@gyq2:/tmp/bench# cat ./stat_by_file_type.0 
+cat: ./stat_by_file_type.0: No such file or directory
+root@gyq2:/tmp/bench# cd upload/
+root@gyq2:/tmp/bench/upload# cat ./stat_by_file_type.0 
+#file_type total_count success_count time_used(ms)
+5K 5000 5000 838
+50K 1000 1000 818
+200K 500 500 1244
+1M 50 50 628
+10M 5 5 476
+100M 1 1 1131
+root@gyq2:/tmp/bench/upload# 
+
+```
+- 下载的性能展示
+```shell
+root@gyq2:/tmp/bench/upload# cd ..
+root@gyq2:/tmp/bench# /home/gyq2/src/fastdfs/test/test_download 0 /etc/fdfs/client.conf
+root@gyq2:/tmp/bench# cat download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+100000 100000 56
+root@gyq2:/tmp/bench# cat download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+170000 170000 96
+root@gyq2:/tmp/bench# cat download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+240000 240000 136
+root@gyq2:/tmp/bench# cat download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+350000 350000 195
+root@gyq2:/tmp/bench# cat download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+420000 420000 232
+root@gyq2:/tmp/bench# cat download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+480000 480000 262
+root@gyq2:/tmp/bench# process 0, time used: 300s
+
+root@gyq2:/tmp/bench# cat download/stat_by_overall.0 
+#total_count success_count  time_used(s)
+549437 549437 300
+root@gyq2:/tmp/bench# cd download/
+root@gyq2:/tmp/bench/download# ls
+fail.0  stat_by_file_type.0  stat_by_overall.0  stat_by_storage_ip.0
+root@gyq2:/tmp/bench/download# cat stat_by_file_type.0 
+#file_type total_count success_count time_used(ms)
+5K 421812 421812 8732
+50K 79877 79877 2488
+200K 43296 43296 3807
+1M 4452 4452 5188
+10M 0 0 0
+100M 0 0 0
+root@gyq2:/tmp/bench/download# 
+
+```
+- 最后关闭fastdfs的指令
+```shell
+fdfs_storaged /etc/fdfs/storage.conf stop && fdfs_trackerd /etc/fdfs/tracker.conf stop
+```
+
+## 性能调优和分析
+### 分析
+这里我们测试发现我们的zvfs和我们的linux的性能差距特别大，有十倍之差，这里肯定是有问题的，我们决定使用perf来看一下是哪里出现问题了
+
+### 性能瓶颈分析
+
+
+
+
+
+
+
 
 
 
