@@ -46,4 +46,14 @@ void clearerr(FILE *fp);
 int fclose(FILE *fp);
 int chdir(const char *path);
 int statvfs64(const char *path, struct statvfs64 *buf);
+char *realpath(const char *path, char *resolved_path);
+char *getcwd(char *buf, size_t size);
+
+FILE *fopen64(const char *pathname, const char *mode);
+char *fgets(char *buf, int size, FILE *stream);
+
+int fstat64(int fd, struct stat64 *st);
+int lstat64(const char *pathname, struct stat64 *st);
+
+int fcntl64(int fd, int cmd, ...);
 #endif

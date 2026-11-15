@@ -573,6 +573,7 @@ int nopen(const char *pathname, int flags)
     else if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL))
     {
         SPDK_NOTICELOG("flag errno\n");
+        errno = EEXIST;
         return -1;
     }
     if (S_ISDIR(inode->mode))
@@ -695,12 +696,36 @@ off64_t nlseek(int fd, off64_t offset, int whence)
         SPDK_NOTICELOG("dont open this fd\n");
         return -1;
     }
-    if (whence != SEEK_SET || offset < 0)
+    off64_t base;
+    switch (whence)
     {
-        SPDK_NOTICELOG("dont have this function\n");
+    case SEEK_SET:
+        base = 0;
+        break;
+    case SEEK_CUR:
+        base = file->offset;
+        break;
+    case SEEK_END:
+        base = file->inode->size;
+        break;
+    default:
+        errno = EINVAL;
         return -1;
     }
-    file->offset = offset;
+
+    off_t new_offset;
+    if (__builtin_add_overflow(base, offset, &new_offset))
+    {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    if (new_offset < 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    file->offset = new_offset;
     return file->offset;
 }
 int nstat(const char *pathname, struct stat64 *st)

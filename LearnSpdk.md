@@ -779,6 +779,11 @@ root@gyq2:/home/gyq2/spdk/examples/zvfs#
 ## 首先依旧了解一下这个是啥
 postgresql是一个存储中间件，和mysql差不多，是一个自己运行的进程，然后我们通过自己的程序连接发送sql语句来操作这个数据库，我们使用zvfs来承接存储功能，使用psbench连接来测试性能
 
+
+## ok呀，这个postgresql也是做不了了
+原因：postgresql由于安全方面的考虑，不能使用root权限去运行，但是我们的spdk由于我们需要启动驱动和配置大页，所以我们需要使用root权限，由于这个问题，我们测试的这个关系型数据库就不能使用这个postgresql，于是我们就换了mysql
+
+
 # FastDFS
 
 ## 首先了解一下这个fastdfs是啥
@@ -1012,6 +1017,163 @@ root@gyq2:/tmp/bench#
 | --- | --- | --- |
 |linux|6556/9|549437/300|
 |zvfs|6556/15|422437/300|
+
+
+# Mysql
+
+## 兼容思路
+目前是古法兼容思路，之间把我们现成的libstore直接跑mysql，然后根据mysql的报错来判断我们现在是在哪一步失败，然后解决对应的问题，实现对应的接口，或者补并发
+
+
+
+## 遇到的第一个困难的问题
+补了几个接口是，遇到了第一个不是接口缺失的问题，是我们的mysql一定会使用到多线程，所以我们这里需要处理我们并发
+## 会使用到的线程
+1. boot启动
+2. ib_log_files_g 提供下一批redo文件，供挡枪日志写满之后切换
+3. ib_io_rd/wr-1 这个是处理io操作的线程
+4. ib_pg_flush_co 这个是把缓冲池里面的页刷出去
+...
+## 设计锁保护资源
+### 设计原则：我们保护的永远是数据，而不是操作
+### 我们需要保护的数据
+
+1. 每一个inode，和存储整个inode的目录树的表inode_table
+2. 我们每一次打开的file状态和file_table
+3. global_thread,cwd
+
+
+4. 总的来说，我们现在先粗略的保护所有可能竞态的数据有以下几个
+- fs/file/inode结构体里面所有的数据
+- file_table/global_thread/cwd全局的变量
+
+### 这里我们先跑通，然后再优化的话，那就是我们先使用一把全局的大锁，再mount里面初始化，然后把使用到的先都锁起来，先不管锁的颗粒度，先跑通
+1. 这里我们就只在shim接口的时候加锁和解锁，这样锁的颗粒度大，锁的操作也大，但是这样我们可以快速跑通
+
+
+
+## 跑通并测试性能
+### zvfs的测试
+
+#### 初始化目录的指令
+```shell
+LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so \
+/home/gyq2/src/mysql-8.0.46/install/bin/mysqld \
+  --no-defaults --initialize-insecure --user=root \
+  --basedir=/home/gyq2/src/mysql-8.0.46/install \
+  --datadir=/zvfs/mysql-test \
+  --innodb-use-native-aio=OFF \
+  --innodb-read-io-threads=1 --innodb-write-io-threads=1 \
+  --innodb-buffer-pool-load-at-startup=OFF \
+  --innodb-buffer-pool-dump-at-shutdown=OFF \
+  --skip-log-bin
+```
+
+#### 启动mysql的指令
+```shell
+install -d -m 0700 /run/mysql-zvfs &&
+LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so \
+/home/gyq2/src/mysql-8.0.46/install/bin/mysqld \
+  --no-defaults --user=root \
+  --basedir=/home/gyq2/src/mysql-8.0.46/install \
+  --datadir=/zvfs/mysql-test \
+  --innodb-use-native-aio=OFF \
+  --innodb-read-io-threads=1 --innodb-write-io-threads=1 \
+  --innodb-buffer-pool-load-at-startup=OFF \
+  --innodb-buffer-pool-dump-at-shutdown=OFF \
+  --skip-log-bin --skip-networking --mysqlx=0 \
+  --socket=/run/mysql-zvfs/mysql.sock \
+  --pid-file=/run/mysql-zvfs/mysqld.pid
+```
+#### 在另一个终端运行bench的指令
+```shell
+/home/gyq2/src/mysql-8.0.46/install/bin/mysqlslap \
+  --no-defaults -uroot --socket=/run/mysql-zvfs/mysql.sock \
+  --create-schema=mysqlslap_bench --engine=InnoDB \
+  --auto-generate-sql --auto-generate-sql-load-type=mixed \
+  --concurrency=1 --iterations=3 --number-of-queries=10000
+```
+#### 关闭mysql
+```shell
+/home/gyq2/src/mysql-8.0.46/install/bin/mysqladmin \
+  --no-defaults -uroot -S /run/mysql-zvfs/mysql.sock shutdown
+```
+#### 测试结果
+```shell
+root@gyq2:/home/gyq2/spdk/examples/zvfs# /home/gyq2/src/mysql-8.0.46/install/bin/mysqlslap \
+  --no-defaults -uroot --socket=/run/mysql-zvfs/mysql.sock \
+  --create-schema=mysqlslap_bench --engine=InnoDB \
+  --auto-generate-sql --auto-generate-sql-load-type=mixed \
+  --concurrency=1 --iterations=3 --number-of-queries=10000
+Benchmark
+        Running for engine InnoDB
+        Average number of seconds to run all queries: 13.737 seconds
+        Minimum number of seconds to run all queries: 12.936 seconds
+        Maximum number of seconds to run all queries: 14.262 seconds
+        Number of clients running queries: 1
+        Average number of queries per client: 10000
+```
+
+### linux的测试
+
+#### 初始化目录的指令
+```shell
+env -u LD_PRELOAD /home/gyq2/src/mysql-8.0.46/install/bin/mysqld \
+  --no-defaults --initialize-insecure --user=root \
+  --basedir=/home/gyq2/src/mysql-8.0.46/install \
+  --datadir=/tmp/mysql-linux-bench \
+  --innodb-use-native-aio=OFF \
+  --innodb-read-io-threads=1 --innodb-write-io-threads=1 \
+  --innodb-buffer-pool-load-at-startup=OFF \
+  --innodb-buffer-pool-dump-at-shutdown=OFF \
+  --skip-log-bin
+```
+#### 启动mysql的指令
+```shell
+install -d -m 0700 /run/mysql-linux-bench &&
+env -u LD_PRELOAD /home/gyq2/src/mysql-8.0.46/install/bin/mysqld \
+  --no-defaults --user=root \
+  --basedir=/home/gyq2/src/mysql-8.0.46/install \
+  --datadir=/tmp/mysql-linux-bench \
+  --innodb-use-native-aio=OFF \
+  --innodb-read-io-threads=1 --innodb-write-io-threads=1 \
+  --innodb-buffer-pool-load-at-startup=OFF \
+  --innodb-buffer-pool-dump-at-shutdown=OFF \
+  --skip-log-bin --skip-networking --mysqlx=0 \
+  --socket=/run/mysql-linux-bench/mysql.sock \
+  --pid-file=/run/mysql-linux-bench/mysqld.pid
+```
+#### 在另个终端运行bench的指令
+```shell
+/home/gyq2/src/mysql-8.0.46/install/bin/mysqlslap \
+  --no-defaults -uroot --socket=/run/mysql-linux-bench/mysql.sock \
+  --create-schema=mysqlslap_bench --engine=InnoDB \
+  --auto-generate-sql --auto-generate-sql-load-type=mixed \
+  --concurrency=1 --iterations=3 --number-of-queries=10000
+```
+
+#### 关闭mysql
+```shell
+/home/gyq2/src/mysql-8.0.46/install/bin/mysqladmin \
+  --no-defaults -uroot -S /run/mysql-linux-bench/mysql.sock shutdown
+```
+#### 测试结果
+```shell
+root@gyq2:/home/gyq2/spdk/examples/zvfs# /home/gyq2/src/mysql-8.0.46/install/bin/mysqlslap \
+  --no-defaults -uroot --socket=/run/mysql-linux-bench/mysql.sock \
+  --create-schema=mysqlslap_bench --engine=InnoDB \
+  --auto-generate-sql --auto-generate-sql-load-type=mixed \
+  --concurrency=1 --iterations=3 --number-of-queries=10000
+Benchmark
+        Running for engine InnoDB
+        Average number of seconds to run all queries: 16.731 seconds
+        Minimum number of seconds to run all queries: 16.431 seconds
+        Maximum number of seconds to run all queries: 16.985 seconds
+        Number of clients running queries: 1
+        Average number of queries per client: 10000
+```
+
+
 
 
 

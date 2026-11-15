@@ -1,6 +1,7 @@
 #include"inode.h"
 #include"zvfs.h"
 #include<string.h>
+#include<pthread.h>
 struct zvfs_file_s *file_table[YQ_MAX_FD] = {0};
 struct spdk_thread *global_thread = NULL;
 void yq_destory_fd(int fd)

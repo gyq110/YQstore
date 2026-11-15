@@ -37,3 +37,7 @@ clean:
 	rm -f $(OBJS) $(OBJS:.o=.d) $(OBJS:.o=.d.tmp) libstore.so
 
 include $(SPDK_ROOT_DIR)/mk/spdk.deps.mk
+ifeq ($(TSAN),1)
+CFLAGS += -O1 -g -fsanitize=thread
+LDFLAGS += -fsanitize=thread
+endif
