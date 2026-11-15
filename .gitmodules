@@ -1,0 +1,16 @@
+[submodule "fio"]
+	path = third_party/fio
+	url = https://github.com/axboe/fio.git
+	shallow = true
+[submodule "rocksdb"]
+	path = third_party/rocksdb
+	url = https://github.com/facebook/rocksdb.git
+	shallow = true
+[submodule "fastdfs"]
+	path = third_party/fastdfs
+	url = https://github.com/happyfish100/fastdfs.git
+	shallow = true
+[submodule "mysql"]
+	path = third_party/mysql
+	url = https://github.com/mysql/mysql-server.git
+	shallow = true
