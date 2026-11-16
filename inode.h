@@ -67,7 +67,7 @@ struct zvfs_file_s
 };
 struct zvfs_file_s *yq_get_filefromfd(int fd);
 void yq_destory_fd(int fd);
-int yq_get_fd_fromlinux();
+int yq_get_fd_fromlinux(void);
 void zvfs_inode_io_done(void *arg, int bserrno);
 void zvfs_inode_io_wait(bool *done);
 zvfs_inode_t *zvfs_inode_create(zvfs_t *fs, zvfs_inode_t *parent, const char *filename, mode_t mode, spdk_blob_id blod_id);

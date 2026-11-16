@@ -15,7 +15,7 @@ void yq_destory_fd(int fd)
     syscall(SYS_close, fd);
 }
 
-int yq_get_fd_fromlinux()
+int yq_get_fd_fromlinux(void)
 {
     // 这里就是从linux获取一个fd
     int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
