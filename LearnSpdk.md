@@ -1174,10 +1174,53 @@ Benchmark
 ```
 
 
+# 第二步
+
+这里我们跑完之后，我们的承接工业界真实的存储项目流程是跑闭环了，但是我们使用了spdk，但是我们的性能却比内核没有提升太多，有的甚至比内核还要慢，这里我们就需要查看是哪里的问题了
+
+## 推测
+这里我们首当其冲的就是fio，这个是我们最底层的测量io性能的工具，现在我们使用这个测量是3600左右和内核差不多，但是我们第一版的时候，我们使用zvfs测的时候性能是10k左右，我们这里添加了啥，我们新建了文件树，实现了文件树的加载和存储，如果代码量cpu耗时不可能占用这么长的时间的话那我们的主要影响性能的还是在io操作耗时上，那我们哪里增加了IO耗时呢，就是文件数的load和save了，但是我们测试fio的时候真的会频繁调用save吗，我们的save会在更改inode信息的时候会被调用，这里主要是猜想，我们先使用perf测量一下，然后在决定先修改啥
+
+## 使用perf测量
+测量步骤
+文件从.data(二进制)->.txt(文本)->.unfold(把文本折叠)->.svg根据栈文本生成最后的火焰图
+### 这里测量性能的时候出现了一个问题，就是我发现我们采集的数据cpu里面的占用的函数全是fio和libc里面，这时候我才发现我们之前由于文件目录树没有完成，所以我们使用的a.txt分流，但是我们建成文件目录树之后，我们使用zvfs来实现分流的，但是我们这里还是使用a.txt，所以之前我们走的都是内核，所以性能才和内核几乎一模一样
+使用/zvfs/a.txt之后，我们的性能已经提升到11k左右了，这里是我们改成/zvfs/a.txt之后的火焰图
+![fio-火焰图](image-3.png)
+这里可以看出，占用cpu的主要是mount和write
+
+## 下一步
+这里我们改完fio之后，我们要从新推断一下，首先我们现在的情况是
+- 的fio是内核的3倍左右
+- 我们的rocksdb是fillseq和flush是内核的4倍，random和内核差不多，
+- 我们的fastdfs的upload是内核的一半，download和内核差不多，比内核慢一点
+- mysql，我们的sql比内核快一点
+
+### 所以这里下一步就比较明显了，就是要从fastdfs开始抓手了
+
+## 提升fastdfs性能
+首先就是使用perf测一下在跑fastdfs的时候的
+- upload
+![fastdfs-upload](image-4.png)
+- download
+![fastdfs-download](image-5.png)
+
+## 火焰图分析
+### upload
+这里我们是从客户端向我们的fastdfs上传文件，我们的fastdfs经过zvfs把文件存储到我们的blobstore里面，所以主要测试的是我们的write的性能，这里我们先来看这个火焰图，我们如何看，主要就是看我们的zvfs里面实现的接口，最深里面的栈才是我们自己实现接口里面最占时间的操作
+- close->table_save
+- open->table_save+zvfs_open
+- rename->table_save
+- write->zvfs_write
+#### 这里其实已经挺明显了，我们的table_save太频繁了，我们的write反而占用了很短的时间，所以这里我们要改一下我们的table_save的调用时机和调用实现方法了
+### download
+这个download走的是read的接口，但是我们的open里面的zvfs_open却比read都要费时间
 
 
 
-
+### 分析结果和我们下一步需要改进的地方
+1. table_save
+2. zvfs_open
 
 
 

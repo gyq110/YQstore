@@ -4,12 +4,12 @@ thread=1
 numjobs=1
 iodepth=1
 
-filename=a.txt
+filename=/zvfs/a.txt
 rw=write
 bs=512
 size=1m
 time_based=1
-runtime=30
+runtime=20
 
 create_on_open=1
 fallocate=none
