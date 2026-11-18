@@ -10,7 +10,6 @@
 #include <time.h>
 #include <spdk/blob.h>
 
-
 #define YQ_MAX_FILENAME 255
 #define YQ_SPDK_ROOT_DIR "/"
 #define YQ_MOUNT_PREFIX "/zvfs"
@@ -57,6 +56,9 @@ struct zvfs_file_s
     off_t offset;
     int flags;
     zvfs_t *fs;
+
+    int close_error;
+
     bool stream_eof;
     bool stream_error;
     uint8_t *read_buffer;

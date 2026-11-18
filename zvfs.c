@@ -44,12 +44,14 @@ static void zvfs_spdk_blob_close_cb(void *cb_arg, int bserrno)
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     spdk_free(file->write_buffer);
     spdk_free(file->read_buffer);
+    file->close_error = bserrno;
     file->finished = true;
 }
 static void zvfs_do_close(void *cb_arg)
 {
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     spdk_blob_close(file->blob, zvfs_spdk_blob_close_cb, file);
+
 }
 
 static void zvfs_spdk_blob_read_cb(void *cb_arg, int bserrno)
@@ -393,8 +395,95 @@ static int zvfs_write(zvfs_file_t *file, const uint8_t *buffer, size_t count)
 static int zvfs_close(zvfs_file_t *file)
 {
     file->finished = false;
-    return waiter(global_thread, zvfs_do_close, file, &file->finished);
+    waiter(global_thread, zvfs_do_close, file, &file->finished);
+    return file->close_error;
 }
+
+#if ENABLE_CACHE
+#define BLOB_CACHE_CAPACITY 6556
+
+struct blob_cache_entry
+{
+    spdk_blob_id id;
+    struct spdk_blob *blob;
+    uint64_t last_used;
+};
+
+static struct blob_cache_entry blob_cache[BLOB_CACHE_CAPACITY];
+static uint64_t blob_cache_clock;
+
+static struct blob_cache_entry *blob_cache_find(spdk_blob_id id)
+{
+    if (id == SPDK_BLOBID_INVALID)
+    {
+        return NULL;
+    }
+
+    for (size_t i = 0; i < BLOB_CACHE_CAPACITY; i++)
+    {
+        if (blob_cache[i].blob != NULL && blob_cache[i].id == id)
+        {
+            return &blob_cache[i];
+        }
+    }
+
+    return NULL;
+}
+
+/* 调用时 file 已经打开，缓存再取得一份独立引用。 */
+static void blob_cache_add(zvfs_file_t *file)
+{
+    struct blob_cache_entry *slot = &blob_cache[0];
+
+    for (size_t i = 0; i < BLOB_CACHE_CAPACITY; i++)
+    {
+        struct blob_cache_entry *entry = &blob_cache[i];
+
+        if (entry->blob == NULL)
+        {
+            slot = entry;
+            break;
+        }
+
+        if (entry->last_used < slot->last_used)
+        {
+            slot = entry;
+        }
+    }
+
+    if (slot->blob != NULL)
+    {
+        zvfs_file_t cached = { .blob = slot->blob };
+        if (zvfs_close(&cached) != 0)
+        {
+            return;
+        }
+        slot->blob = NULL;
+    }
+
+    zvfs_file_t cached =
+    {
+        .fs = file->fs,
+        .inode = file->inode,
+    };
+
+    zvfs_open(&cached);
+    if (cached.blob != NULL)
+    {
+        slot->id = file->inode->blob_id;
+        slot->blob = cached.blob;
+        slot->last_used = ++blob_cache_clock;
+    }
+}
+
+
+
+
+#endif
+
+
+
+
 
 static const char *json_file = "/home/gyq2/spdk/build/examples/zvfs.json";
 
@@ -631,7 +720,26 @@ int nopen(const char *pathname, int flags)
     size_t size = BUFFER_SIZE;
     file->read_buffer = spdk_malloc(size, 0x1000, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
     file->write_buffer = spdk_malloc(size, 0x1000, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
+#if ENABLE_CACHE
+    struct blob_cache_entry *entry = blob_cache_find(inode->blob_id);
+
     zvfs_open(file);
+
+    if (file->blob != NULL)
+    {
+        if (entry != NULL)
+        {
+            entry->last_used = ++blob_cache_clock;
+        }
+        else
+        {
+            blob_cache_add(file);
+        }
+    }
+#else
+    zvfs_open(file);
+#endif
+
     /*
         if (create)
         {
@@ -828,6 +936,19 @@ bool zvfs_reclaim_inode(zvfs_inode_t *inode)
             return false;
         }
     }
+#if ENABLE_CACHE
+    struct blob_cache_entry *entry = blob_cache_find(inode->blob_id);
+
+    if (entry != NULL)
+    {
+        zvfs_file_t cached = { .blob = entry->blob };
+        if (zvfs_close(&cached) != 0)
+        {
+            return false;
+        }
+        entry->blob = NULL;
+    }
+#endif
     //这里就是整个表都没有这个fd持有这个inode了，可以释放了
     fs->inode_table[inode->ino] = NULL;
     fs->inode_count--;
