@@ -501,12 +501,12 @@ LD_PRELOAD= /home/gyq2/src/rocksdb/db_bench --db=/tmp/rocksdb-bench --benchmarks
 
 - 写操作和flush落盘操作
 ```shell
-LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so /home/gyq2/src/rocksdb/db_bench   --db=/zvfs/rocksdb-bench --benchmarks=fillseq,flush   --num=100000 --threads=1 --compression_type=none --histogram=1 --sync=1
+LD_PRELOAD=/home/gyq2/spdk/examples/YQstore/libstore.so /home/gyq2/src/rocksdb/db_bench   --db=/zvfs/rocksdb-bench --benchmarks=fillseq,flush   --num=100000 --threads=1 --compression_type=none --histogram=1 --sync=1
 ```
 
 - 随机读操作
 ```shell
-LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so /home/gyq2/src/rocksdb/db_bench --db=/zvfs/rocksdb-bench --benchmarks=readrandom --use_existing_db=1   --num=100000 --duration=30 --threads=1 --compression_type=none --histogram=1
+LD_PRELOAD=/home/gyq2/spdk/examples/YQstore/libstore.so /home/gyq2/src/rocksdb/db_bench --db=/zvfs/rocksdb-bench --benchmarks=readrandom --use_existing_db=1   --num=100000 --duration=30 --threads=1 --compression_type=none --histogram=1
 ```
 3. 指令解析
 - LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so 这个是要链接的库
@@ -815,7 +815,7 @@ postgresql是一个存储中间件，和mysql差不多，是一个自己运行�
 - 启动fastdfs
 ```shell
 mkdir -p /tmp/fastdfs && fdfs_trackerd /etc/fdfs/tracker.conf start &&
-LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so fdfs_storaged /etc/fdfs/storage.conf start
+LD_PRELOAD=/home/gyq2/spdk/examples/YQstore/libstore.so fdfs_storaged /etc/fdfs/storage.conf start
 ```
 - 启动bench测试upload
 ```shell
@@ -1057,7 +1057,7 @@ root@gyq2:/tmp/bench#
 
 #### 初始化目录的指令
 ```shell
-LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so \
+LD_PRELOAD=/home/gyq2/spdk/examples/YQstore/libstore.so \
 /home/gyq2/src/mysql-8.0.46/install/bin/mysqld \
   --no-defaults --initialize-insecure --user=root \
   --basedir=/home/gyq2/src/mysql-8.0.46/install \
@@ -1072,7 +1072,7 @@ LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so \
 #### 启动mysql的指令
 ```shell
 install -d -m 0700 /run/mysql-zvfs &&
-LD_PRELOAD=/home/gyq2/spdk/examples/zvfs/libstore.so \
+LD_PRELOAD=/home/gyq2/spdk/examples/YQstore/libstore.so \
 /home/gyq2/src/mysql-8.0.46/install/bin/mysqld \
   --no-defaults --user=root \
   --basedir=/home/gyq2/src/mysql-8.0.46/install \
@@ -1222,6 +1222,53 @@ Benchmark
 1. table_save
 2. zvfs_open
 
+
+## table_save如何改
+### 我们先来看我们目前table_save是如何实现的，和我们调用这个函数的调用逻辑
+1. 这个save函数就是把inode_table里面的数据和fs的信息先copy到一个buffer里面，然后我们再把这个buffer写到super_blob里面，我们从火焰图table_save的上面几乎全是wait说明我们的阻塞点主要是在io操作太费时了
+2. 这里主要阻塞我们调用就是我们这里看到的3个函数rename.close，open
+
+
+
+
+### 解决思路
+这里我先不考虑突然宕机的情况，我们如果一直是进程自动退出，而且是我们单进程的实验情况下，这里我就先把我们的open，close，rename的save先都注释掉，然后我们使用atexit在mount的时候注册一个进程退出函数，然后我们在进程退出之后在集中执行这个exit统一save
+### 实验结果
+就是我们的fastdfs的upload上传6556个文件从原来的16s缩短到10s，但是还是比内核的8s慢一点点
+### 弊端
+当然这样做肯定是有问题的，就是如果这个进程突然被终端，那我们的这个磁盘上在这次进程中创建的修改的文件信息会全部被丢失，我们使用clear_删除的时候，我们的文件目录树里面也是没有这些文件的信息，如果多次之后，我们的这个blobstore就会被这些没有办法控制的数据填满，我们正常的数据反而没有空间了
+
+### 下一步
+但是这里我们先不考虑这些弊端，我们还需要进一步的优化这里的性能，那我们接下来就需要重新使用perf采集一下我们修改完之后的数据，然后生成火焰图重新分析
+
+![fastdfs-v2-upload](image-6.png)
+这里可以看到，我们的的cpu里面，占用cpu最多的一个是我们的write，由于现在我们的spdk是同步的，每次读写都会同步到我们的blob，所以这个write目前不是优化的重点，那另一个open就是我们下一个优化的重点了
+
+### open的优化
+好吧，这里其实open实现很简单，也没有办法优化，我们只有创建blob和打开blob这俩次io，而且spdk也没有提供一个IO就实现创建和打开的接口，所以这里不能优化了，除非写批量打开IO，但这个是我们后面要做的
+
+
+
+
+## 写的最终
+首先做一个总结，之前我总是在想要把这个变成异步会更快，但是这里是我的问题，这里我们改成异步固然会快，但是内核也会变快，所以瓶颈不在同步和异步，而是我们当下的操作确实是慢，所以我暂时就没有把我们的项目改异步，而是把同步的性能先提升起来，我们改了啥，我们首先通过火焰图找到了fio低是我们的fio没有走我们的zvfs，改了之后，我们的性能提升了，然后就是我们的fastdfs还是慢，发现我们的spdk的savetable等带太长，所以我改成了save_table等到进程结束退出是统一的save，我们的fastdfsupload6550个文件的时间从18s->10s然后就是我们的fastdfs还是异步的，为了方便对照，我给fastdfs操作的文件夹添加了+S的属性，这要就是都是同步了，这个就是以后的结果了
+
+|性能对比|linux|zvfs|
+|---|---|---|
+|fio|3.6K|11.1k|
+|fastdfs|25s|10s|
+|rocksdb|4.6k|1.1k|
+|mysql|14s|16s|
+
+
+
+## 这里写的性能是优化完了，接下来就是优化读的性能了
+这里我们先看我们之前这个fastdfs的download采集的，看一下是哪些耗费cpu
+![fastdfs-download](image-5.png)
+这里可以看到最大的竟然是open，比我们的read都要多，这里肯定是不对的
+
+
+### open
 
 
 

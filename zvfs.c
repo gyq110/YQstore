@@ -41,7 +41,6 @@ static void zvfs_do_unmount(void *arg)
 
 static void zvfs_spdk_blob_close_cb(void *cb_arg, int bserrno)
 {
-
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
     spdk_free(file->write_buffer);
     spdk_free(file->read_buffer);
@@ -445,8 +444,8 @@ static int zvfs_env_setup(void)
     {
         return -1;
     }
-    spdk_log_set_print_level(SPDK_LOG_NOTICE);
-    spdk_log_set_level(SPDK_LOG_NOTICE);
+    spdk_log_set_print_level(SPDK_LOG_WARN);
+    spdk_log_set_level(SPDK_LOG_WARN);
     spdk_log_open(NULL);
     spdk_thread_lib_init(NULL, 0);
     global_thread = spdk_thread_create("global", NULL);
@@ -456,6 +455,18 @@ static int zvfs_env_setup(void)
 
     return 0;
 }
+
+
+//这里我们实现一个在进程退出后自动执行的一个收尾函数
+static void zvfs_save_on_exit(void)
+{
+    if (fs != NULL)
+    {
+        zvfs_inode_table_save(fs);
+    }
+}
+
+
 
 
 // 这里是对上面的接口的整合
@@ -477,6 +488,11 @@ static int zvfs_ensure_mounted(void)
         free(new_fs);
         errno = EIO;
         return -1;
+    }
+    if (atexit(zvfs_save_on_exit) != 0)
+    {
+        SPDK_ERRLOG("failed to register zvfs_save_on_exit\n");
+        exit(EXIT_FAILURE);
     }
 
     fs = new_fs;
@@ -616,10 +632,12 @@ int nopen(const char *pathname, int flags)
     file->read_buffer = spdk_malloc(size, 0x1000, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
     file->write_buffer = spdk_malloc(size, 0x1000, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
     zvfs_open(file);
-    if (create)
-    {
-        zvfs_inode_table_save(fs);//这里是创建完之后的落盘
-    }
+    /*
+        if (create)
+        {
+            zvfs_inode_table_save(fs);//这里是创建完之后的落盘
+        }
+    */
     file_table[fd] = file;
     return fd;
 }
@@ -678,10 +696,14 @@ int nclose(int fd)
             //这里是unlink的删除
             zvfs_reclaim_inode(file->inode);
         }
+        /*
         else if ((file->flags & O_ACCMODE) != O_RDONLY)
         {
+
             zvfs_inode_table_save(file->fs);
         }
+
+        */
     }
     yq_destory_fd(fd);
     free(file);
@@ -1011,10 +1033,14 @@ int nrename(const char *oldpath, const char *newpath)
     }
 
     strcpy(source->filename, strrchr(newpath, '/') + 1);
-
-    if (target == NULL || !zvfs_reclaim_inode(target))
-        zvfs_inode_table_save(fs);
-
+    /*
+        if (target == NULL || !zvfs_reclaim_inode(target))
+            zvfs_inode_table_save(fs);
+    */
+    if (target != NULL)
+    {
+        zvfs_reclaim_inode(target);
+    }
     return 0;
 }
 int nstatvfs(const char *pathname, struct statvfs *buf)
