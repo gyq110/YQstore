@@ -1,7 +1,7 @@
-#include"inode.h"
 #include"zvfs.h"
 #include<string.h>
 #include<pthread.h>
+
 struct zvfs_file_s *file_table[YQ_MAX_FD] = {0};
 struct spdk_thread *global_thread = NULL;
 void yq_destory_fd(int fd)
@@ -101,6 +101,10 @@ void zvfs_inode_table_save(zvfs_t *fs)
         if (inode != NULL)
         {
             memcpy(record, inode, sizeof(*inode));
+#if ENABLE_CACHE
+            memset(record + offsetof(zvfs_inode_t, read_cache_head), 0,
+                   sizeof(inode->read_cache_head));
+#endif
             record += sizeof(*inode);
         }
     }
@@ -148,6 +152,9 @@ void zvfs_inode_table_load(zvfs_t *fs)
     {
         zvfs_inode_t *inode = malloc(sizeof(*inode));
         memcpy(inode, record, sizeof(*inode));
+#if ENABLE_CACHE
+        inode->read_cache_head = NULL;
+#endif
         fs->inode_table[inode->ino] = inode;
         record += sizeof(*inode);
     }

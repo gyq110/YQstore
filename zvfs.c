@@ -54,9 +54,17 @@ static void zvfs_do_close(void *cb_arg)
 
 }
 
+#if ENABLE_CACHE
+// The shim serializes access to the single SPDK thread.
+static int zvfs_read_io_error;
+#endif
+
 static void zvfs_spdk_blob_read_cb(void *cb_arg, int bserrno)
 {
     zvfs_file_t *file = (zvfs_file_t *)cb_arg;
+#if ENABLE_CACHE
+    zvfs_read_io_error = bserrno;
+#endif
 
     file->finished = true;
 }
@@ -280,8 +288,137 @@ static int zvfs_open(struct zvfs_file_s *file)
     return 0;
 }
 
+#if ENABLE_CACHE
+#define READ_CACHE_MAX_BYTES (96U * 1024U * 1024U) //这个是我们最多缓存的空间的大小
+#define READ_CACHE_MAX_FILE_SIZE (50 * 1024)
+
+//这个是我们缓存的一个节点的结构体
+struct read_cache_unit
+{
+    uint64_t unit_index;
+    struct read_cache_unit *next;
+    uint8_t data[];
+};
+
+static size_t read_cache_used_bytes;//这个是记录我们全局所有inode缓存了多少字节
+static uint64_t read_cache_next_evict_ino = 1;
+
+static void read_cache_invalidate(zvfs_inode_t *inode, size_t unit_size)
+{
+    //这个是把cache_list全部释放
+    const size_t node_size = sizeof(struct read_cache_unit) + unit_size;
+
+    while (inode->read_cache_head != NULL)
+    {
+        struct read_cache_unit *node = inode->read_cache_head;
+        inode->read_cache_head = node->next;
+        free(node);
+        read_cache_used_bytes -= node_size;
+    }
+}
+
+static bool read_cache_try_copy(zvfs_file_t *file, uint64_t first_unit,
+                                size_t buffer_offset, uint8_t *dst, size_t bytes)
+{
+    //这里是由于我们如果缓存命中一部分可能会执行缺口多次io，而我们就算不命中也只用批量执行一次io
+    //所以这里的策略就是如果没有覆盖这次读取的全部，那就直接一次io
+    struct read_cache_unit *first = file->inode->read_cache_head;
+    while (first != NULL && first->unit_index < first_unit)
+        first = first->next;
+    //到这里我们的fist要不是NULL,要不就是等于或者是后面的unit
+    struct read_cache_unit *node = first;
+    for (size_t i = 0; i < file->read_units; i++)
+    {
+        if (node == NULL || node->unit_index != first_unit + i)
+            return false;
+        node = node->next;
+    }
+    //到这里就是全部命中了，可以拷贝到buffer里面就是dst
+    const size_t unit_size = file->fs->io_unit_size;
+    for (node = first; bytes != 0; node = node->next)
+    {
+        size_t chunk = unit_size - buffer_offset;
+        if (chunk > bytes)
+            chunk = bytes;
+
+        memcpy(dst, node->data + buffer_offset, chunk);
+        dst += chunk;
+        bytes -= chunk;
+        buffer_offset = 0;
+    }
+
+    return true;
+}
+
+static int zvfs_read_cached_batch(zvfs_file_t *file, uint64_t first_unit,
+                                  size_t buffer_offset, uint8_t *dst, size_t bytes)
+{
+    //这个函数是我们从zvfs_read跳转过来的读取函数
+    //首先第一步，看一下cache能不能命中
+    const bool cacheable = file->inode->size <= READ_CACHE_MAX_FILE_SIZE;
+    if (cacheable && read_cache_try_copy(file, first_unit, buffer_offset, dst, bytes))
+        return 0;
+
+    //不能命中我们再走waiter从磁盘上读取
+    file->finished = false;
+    waiter(global_thread, zvfs_do_read, file, &file->finished);
+    if (zvfs_read_io_error != 0)
+    {
+        errno = -zvfs_read_io_error;
+        return -1;
+    }
+    //接下来就是插入节点，更新我们的缓存链表
+    zvfs_t *fs = file->fs;
+    const size_t unit_size = fs->io_unit_size;
+    const size_t node_size = sizeof(struct read_cache_unit) + unit_size;
+    struct read_cache_unit **link = &file->inode->read_cache_head;
+    const size_t cache_units = cacheable ? file->read_units : 0;
+
+    for (size_t i = 0; i < cache_units; i++)
+    {
+        const uint64_t index = first_unit + i;
+        while (*link != NULL && (*link)->unit_index < index)
+            link = &(*link)->next;
+        if (*link != NULL && (*link)->unit_index == index)
+            continue;
+
+        // Keep the chain that link points into alive while evicting.
+        for (uint64_t scanned = 1;
+                read_cache_used_bytes + node_size > READ_CACHE_MAX_BYTES &&
+                scanned < fs->next_ino;
+                scanned++)
+        {
+            zvfs_inode_t *victim = fs->inode_table[read_cache_next_evict_ino++];
+            if (read_cache_next_evict_ino == fs->next_ino)
+                read_cache_next_evict_ino = 1;
+
+            if (victim != NULL && victim != file->inode &&
+                    victim->read_cache_head != NULL)
+                read_cache_invalidate(victim, unit_size);
+        }
+
+        if (read_cache_used_bytes + node_size > READ_CACHE_MAX_BYTES)
+            break;
+
+        struct read_cache_unit *node = malloc(node_size);
+        if (node == NULL)
+            break;
+
+        node->unit_index = index;
+        memcpy(node->data, file->read_buffer + i * unit_size, unit_size);
+        node->next = *link;
+        *link = node;
+        link = &node->next;
+        read_cache_used_bytes += node_size;
+    }
+
+    memcpy(dst, file->read_buffer + buffer_offset, bytes);
+    return 0;
+}
+#endif
+
 // read
-static int zvfs_read(zvfs_file_t *file, uint8_t *buffer, size_t count)
+static ssize_t zvfs_read(zvfs_file_t *file, uint8_t *buffer, size_t count)
 {
 
     size_t copied = 0;
@@ -289,9 +426,10 @@ static int zvfs_read(zvfs_file_t *file, uint8_t *buffer, size_t count)
 
     while (copied < count)
     {
-        size_t buffer_offset = file->offset % unit_size;
-        size_t bytes = count - copied;
-        size_t max_bytes = (BUFFER_SIZE / unit_size) * unit_size - buffer_offset;
+        size_t buffer_offset = file->offset % unit_size;//这个是我们当前offset最后不够一个单元的字节
+        size_t bytes = count - copied;//这里是我们剩余的需要拷贝的字节
+        size_t max_bytes = (READ_BUFFER_SIZE / unit_size) * unit_size - buffer_offset;
+        //我们需要拷贝多少字节，我们前面的buffer_offset是不需要拷的，所以要减去
 
         if (bytes > max_bytes)
         {
@@ -299,12 +437,19 @@ static int zvfs_read(zvfs_file_t *file, uint8_t *buffer, size_t count)
         }
 
         file->read_units = (buffer_offset + bytes + unit_size - 1) / unit_size;
+#if ENABLE_CACHE
+        uint64_t first_unit = file->offset / unit_size;
+        if (zvfs_read_cached_batch(file, first_unit, buffer_offset,
+                                   buffer + copied, bytes) < 0)
+            return copied == 0 ? -1 : (ssize_t)copied;
+#else
         file->finished = false;
         waiter(global_thread, zvfs_do_read, file, &file->finished);
 
         memcpy(buffer + copied,
                file->read_buffer + buffer_offset,
                bytes);
+#endif
 
         file->offset += bytes;
         copied += bytes;
@@ -717,9 +862,10 @@ int nopen(const char *pathname, int flags)
     file->flags = flags;
 //这里mount就完了，我们需要改一我们的zvfs_open,如果我们的文件是之前就有的，那我们需要通过blobid找到blob，而不是每次都创建一个blob
     int fd = yq_get_fd_fromlinux();
-    size_t size = BUFFER_SIZE;
-    file->read_buffer = spdk_malloc(size, 0x1000, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
-    file->write_buffer = spdk_malloc(size, 0x1000, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
+    file->read_buffer = spdk_malloc(READ_BUFFER_SIZE, 0x1000, NULL,
+                                    SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
+    file->write_buffer = spdk_malloc(BUFFER_SIZE, 0x1000, NULL,
+                                     SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
 #if ENABLE_CACHE
     struct blob_cache_entry *entry = blob_cache_find(inode->blob_id);
 
@@ -774,6 +920,10 @@ ssize_t nwrite(int fd, const void *buf, size_t count)
         return -1;
     }
 
+#if ENABLE_CACHE
+    if (count != 0)
+        read_cache_invalidate(file->inode, file->fs->io_unit_size);
+#endif
     return zvfs_write(file, buf, count);
 }
 int nclose(int fd)
@@ -916,6 +1066,10 @@ int nftruncate(int fd, off_t length)
 {
     //这个函数的作用是根据这个fd来给文件设置总大小，如果我们现在的文件大小小于我们的length，我们就需要对文件精细扩容操作
     zvfs_file_t *file = yq_get_filefromfd(fd);
+#if ENABLE_CACHE
+    if (length != file->inode->size)
+        read_cache_invalidate(file->inode, file->fs->io_unit_size);
+#endif
     if (length > file->inode->size)
     {
         zvfs_resize(file, length);
@@ -948,6 +1102,7 @@ bool zvfs_reclaim_inode(zvfs_inode_t *inode)
         }
         entry->blob = NULL;
     }
+    read_cache_invalidate(inode, fs->io_unit_size);
 #endif
     //这里就是整个表都没有这个fd持有这个inode了，可以释放了
     fs->inode_table[inode->ino] = NULL;

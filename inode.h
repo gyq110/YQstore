@@ -46,6 +46,9 @@ struct zvfs_inode_s
     uint64_t parent_ino;
     uint64_t next_sibling_ino;
     uint64_t first_child_ino;
+#if ENABLE_CACHE
+    struct read_cache_unit *read_cache_head;
+#endif
 
 };
 

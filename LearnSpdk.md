@@ -159,7 +159,7 @@ thread=1
 numjobs=1
 iodepth=1
 
-filename=a.txt
+filename=/zvfs/a.txt
 rw=write
 bs=512
 size=1m
@@ -855,6 +855,7 @@ root@gyq2:/tmp/bench/upload# cd ..
 root@gyq2:/tmp/bench# /home/gyq2/src/fastdfs/test/test_download 0 /etc/fdfs/client.conf
 root@gyq2:/tmp/bench# cat ./download/stat_by_overall.0 
 #total_count success_count  time_used(s)
+
 20000 20000 118
 root@gyq2:/tmp/bench# cat ./download/stat_by_overall.0 
 #total_count success_count  time_used(s)
@@ -1315,3 +1316,55 @@ Benchmark
 
 ### 优化read
 
+1. 那再来看我们的这个缓存，我们使用缓存到底会不会增快，我们这里是一次拷贝多个read_buffer，我们缓存应该按照啥来缓存，首先我们一个read_buffer不能拆，就是要不我们的缓存可以把read_buffer写满，要不就不写，毕竟我们read_buffer只用一次io，如果拆散就需要copy和一次及以上的io
+2. 这里具体如何做，首先这些缓存如何管理，我们需要添加指针，在inode里面添加指针，指向我们的一块空间，一个结构体链表，我们做一个函数，是向每一个inode添加我们当前读取的缓存快，我们需要把do_read改一下，改成do_read就是先读出我们缓存，如果读取不到我们再读取io，然后把这个读的内容添加到我们的链表里面，那这个链表结构体如何定义呢，这里我们的read_buffer可能有部分重复，但是我们的unit是不重复的，我们可以把一个缓存结构体包装成一个unit节点的数据，和相对于这个blob的offset，然后我们添加的时候由于我们调用添加的函数之前肯定已经查找过了，或者我们直接包装一个读缓存的函数，读到了就copy，没有读到就先io读磁盘，然后再拷贝，但是我们还需要规定淘汰机制，不然有可能最后我们所有的文件都被读到内存里面了
+
+
+### read 缓存实现
+1. 我们的思路是在我们的read_buffer里面，我们现在就是直接通过waiter把数据写到read_buffer里面，然后我们再使用memcpy把read_buffer里面的数据写到我们的接口提供的buffer里面
+
+2. 我们缓存的结构体，首先是链表，有next，然后存储一个unit的单元，有data，还有offset，这里我们使用index
+3. 现在我们的流程
+- 首先在zvfs_read里面，我们不直接通过wait读取磁盘了，直接进入一个函数，然后函数里面实现先读缓存，然后再读io，更新缓存的操作
+### 测试结果和优化
+改完之后，我再次进行了fastdfs的download测试，但是发现性能提升微乎其微，然后我使用火焰图采集cpu使用
+![alt text](image-11.png)
+这里可以看到，我们的新的动态库确实走我们的缓存了，但是大部分还是没有命中，这个是为啥呢![alt text](image-12.png)
+确实走我们的缓存的还是特别少
+
+#### 优化方法
+1. 这里有俩个思路，一个是减少我们的io，一个是增加我们的缓存命中率，减少io，我适当的增大了read_buffer的读空间
+2. 这里我们是随机读我们之前upload上传的文件，但是我们的文件有大有小，当我们的缓存空间不够的时候，我们会轮转的淘汰，但是我们缓存一个大文件如果超空间了，我们就会把之前成百上千的小文件删掉，所以我们这里先通过限制文件的大小来实现增大我们的缓存命中率
+
+### 优化后测试的结果，我们的性能超过了内核
+![alt text](image-13.png)
+这里可以看到，我们整个read的cpu占用都减少了
+
+
+
+## 在优化完所有之后，我们重新测一下我们所有的性能
+### zvfs
+#### fio
+![alt text](image-14.png)
+#### rocksdb
+fillseq.flush
+![alt text](image-16.png)
+randomread
+![alt text](image-17.png)
+#### fastdfs
+![alt text](image-20.png)
+![alt text](image-21.png)
+#### mysql
+![alt text](image-23.png)
+### linux
+#### fio
+![alt text](image-15.png)
+#### rocksdb
+fillseq,flush
+![alt text](image-18.png)
+randomread
+![alt text](image-19.png)
+#### fastdfs
+![alt text](image-22.png)
+#### mysql
+![alt text](image-24.png)

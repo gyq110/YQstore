@@ -20,15 +20,14 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #include<sys/stat.h>
+#define ENABLE_CACHE 1
 #include"inode.h"
 #include<sys/statvfs.h>
 
 
-#define ENABLE_CACHE 1
-
-
 
 #define BUFFER_SIZE (128U*1024U)
+#define READ_BUFFER_SIZE (256U*1024U)
 extern struct spdk_thread *global_thread;
 
 
