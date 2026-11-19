@@ -96,7 +96,9 @@ ZVFS 用 `eventfd()` 获取内核分配的 fd，再用 `file_table` 将 fd 映�
 
 ### 3.3 异步 I/O 与并发
 
-文件接口提交 SPDK 请求并轮询 `global_thread`，等完成回调后返回。普通文件使用 128 KiB 读写缓冲区，连续对齐的数据按批提交，非对齐写入先读取对应 I/O 单元、覆盖修改的字节，再写回。
+文件接口提交 SPDK 请求并轮询 `global_thread`，等完成回调后返回。普通文件使用 256 KiB 读缓冲区和 128 KiB 写缓冲区。连续对齐的数据按批提交，非对齐写入先读取对应 I/O 单元、覆盖修改的字节，再写回。
+
+启用 `ENABLE_CACHE` 时，ZVFS 缓存已打开的 blob 引用，并按 I/O unit 缓存不超过 50 KiB 的文件内容。内容缓存预算为 96 MiB。一次读取所需的 unit 全部命中时直接复制给应用，有缺口时按原批次发起 SPDK 读取。
 
 MySQL 的启动线程和 redo 文件管理线程曾经同时扩容 inode 表。当前实现通过 shim 的递归互斥锁串行化共享状态访问和 SPDK 轮询。`access()` 对明确属于 Linux 的绝对路径提前分流，使 DPDK 初始化线程检查 `/sys` 时可以继续执行。
 
@@ -134,29 +136,43 @@ Linux 侧使用 `/tmp/mysql-linux-bench` 作为数据目录，将压测命令的
 
 ## 5. 性能数据
 
-### 5.1 当前阶段汇总
+### 5.1 2026-11-19 复测汇总
 
-| 负载 | Linux | ZVFS |
+下表使用同一台 Ubuntu 虚拟机内的 Linux ext4 作为对照。测试命令和原始截图见 [LearnSpdk.md](LearnSpdk.md)。
+
+| 负载 | Linux ext4 | ZVFS | ZVFS 相对变化 | 原始截图 |
+| --- | ---: | ---: | ---: | --- |
+| fio 顺序写，512 B，`psync`，队列深度 1，20 秒 | 3,912 IOPS | 约 10,600 IOPS | 约 2.7 倍 IOPS | [Linux](image-15.png) · [ZVFS](image-14.png) |
+| RocksDB `fillseq`，单线程，100,000 条，`--sync=1` | 1,102 ops/s | 4,527 ops/s | 4.11 倍吞吐 | [Linux](image-18.png) · [ZVFS](image-16.png) |
+| RocksDB `readrandom`，单线程，30 秒 | 919,682 ops/s | 931,787 ops/s | 吞吐 +1.3% | [Linux](image-19.png) · [ZVFS](image-17.png) |
+| FastDFS 上传，13,112 个文件 | 52 秒 | 19 秒 | 耗时 −63.5% | [Linux](image-22.png) · [ZVFS](image-20.png) |
+| FastDFS 下载，60 秒 | 106,396 次成功 | 110,117 次成功 | 下载数 +3.5% | [Linux](image-22.png) · [ZVFS](image-21.png) |
+| MySQL `mysqlslap mixed`，单客户端，每轮 10,000 条查询，3 轮 | 17.608 秒/轮 | 13.073 秒/轮 | 平均耗时 −25.8% | [Linux](image-24.png) · [ZVFS](image-23.png) |
+
+RocksDB 的顺序写吞吐取自 `fillseq` 阶段，同一命令随后执行 `flush`。FastDFS 上传的 13,112 个文件在两边均全部成功，下载数取自对应的 60 秒测试输出。
+
+### 5.2 fio 与 RocksDB 明细
+
+| 指标 | Linux ext4 | ZVFS |
 | --- | ---: | ---: |
-| RocksDB `fillseq`，单线程 100,000 条 | 1,133 ops/s | 4,580 ops/s |
-| RocksDB `readrandom`，单线程 30 秒 | 968,816 ops/s | 900,354 ops/s |
-| FastDFS 上传，6,556 个文件 | 约 728 文件/s | 约 437 文件/s |
-| FastDFS 下载，300 秒 | 约 1,831 文件/s | 约 1,408 文件/s |
-| MySQL `mysqlslap mixed`，单客户端、每轮 10,000 条 SQL | 16.731 s/轮 | 13.737 s/轮 |
+| fio 顺序写带宽 | 1,956 KiB/s | 5,291 KiB/s |
+| fio 顺序写平均完成延迟 | 253.52 µs | 93.23 µs |
+| fio 顺序写 P99 完成延迟 | 537 µs | 241 µs |
+| RocksDB `fillseq` P99 写入延迟 | 1,820.37 µs | 567.25 µs |
+| RocksDB `readrandom` P99 读取延迟 | 2.04 µs | 2.00 µs |
+| RocksDB `readrandom` P99.9 读取延迟 | 8.50 µs | 16.94 µs |
 
-这些是开发过程中不同应用、不同负载的测试结果。fio 早期记录使用相对文件名 `a.txt`，这里保留接口验证结果，原始输出见 [fio 记录](LearnSpdk.md#fio)。
-
-### 5.2 MySQL 明细
+### 5.3 MySQL 明细
 
 | 数据目录 | 轮数 | 平均耗时 | 最快–最慢 | 按平均耗时折算 |
 | --- | ---: | ---: | ---: | ---: |
-| ZVFS `/zvfs/mysql-test` | 3 | 13.737 s | 12.936–14.262 s | 约 728 条 SQL/s |
-| Linux ext4 `/tmp/mysql-linux-bench` | 3 | 16.731 s | 16.431–16.985 s | 约 598 条 SQL/s |
+| Linux ext4 `/tmp/mysql-linux-bench` | 3 | 17.608 s/轮 | 17.440–17.932 s | 约 568 条 SQL/s |
+| ZVFS `/zvfs/mysql-test` | 3 | 13.073 s/轮 | 10.601–14.322 s | 约 765 条 SQL/s |
 
-在这组混合负载中，ZVFS 平均每轮少用 2.994 秒，耗时降低约 17.9%，折算吞吐高约 21.8%。当前 ZVFS 的 `fsync`、`fdatasync` 对虚拟 fd 直接返回成功，两侧刷盘语义仍待等价验证。当前数据验证覆盖正常关库后的重启读回，断电恢复仍待测试。
+ZVFS 平均每轮少用 4.535 秒，按平均耗时折算的吞吐高约 34.7%。当前 ZVFS 的 `fsync`、`fdatasync` 对虚拟 fd 直接返回成功，两侧刷盘语义仍待等价验证。数据验证覆盖正常关库后的重启读回，断电恢复仍待测试。
 
 ## 6. 开发记录
 
 - [LearnSpdk.md](LearnSpdk.md) 记录从 SPDK 异步 I/O 封装、inode 持久化到 RocksDB、FastDFS、MySQL 的接入过程，以及各项测试的原始输出。
-- FastDFS 调优记录包含 `perf` 分析、128 KiB 缓冲区和批量读写的修改过程。见 [FastDFS 性能调优](LearnSpdk.md#性能调优和分析)。
+- FastDFS 调优记录包含 `perf` 火焰图分析、inode 表保存时机调整、blob 打开缓存和文件内容缓存。见 [FastDFS 性能调优](LearnSpdk.md#性能调优和分析)。
 - MySQL 接入记录包含 inode 表并发问题、锁保护范围、启动参数以及 Linux 对照。见 [MySQL 接入](LearnSpdk.md#mysql)。
