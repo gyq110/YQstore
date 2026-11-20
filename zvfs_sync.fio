@@ -5,7 +5,6 @@ numjobs=1
 iodepth=1
 
 filename=/zvfs/a.txt
-rw=write
 bs=512
 size=1m
 time_based=1
@@ -23,3 +22,8 @@ unlink=0
 group_reporting=1
 
 [write-test]
+rw=write
+
+[read-test]
+stonewall
+rw=read
